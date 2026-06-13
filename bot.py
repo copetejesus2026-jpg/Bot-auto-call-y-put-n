@@ -17,7 +17,7 @@ logging.basicConfig(
 )
 
 # ==========================================
-# ⚙️ CONFIGURACIÓN - EJECUCIÓN EN VELA SIGUIENTE
+# ⚙️ CONFIGURACIÓN - EJECUCIÓN PRECISA SIGUIENTE VELA
 # ==========================================
 EMAIL = os.getenv("IQ_EMAIL")
 PASSWORD = os.getenv("IQ_PASSWORD")
@@ -25,30 +25,31 @@ TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 EXPIRATION = 1
-BASE_AMOUNT = 25
+BASE_AMOUNT = 91
 TIMEFRAME_M1 = 60
 
-# Lista de pares OTC 24h
+# Todos los pares OTC como en tus gráficos
 PAIRS = [
     "EURUSD-OTC", "GBPUSD-OTC", "EURGBP-OTC", "EURJPY-OTC", "GBPJPY-OTC",
     "AUDUSD-OTC", "USDCAD-OTC", "USDCHF-OTC", "NZDUSD-OTC",
-    "EURCAD-OTC", "GBPCAD-OTC", "AUDJPY-OTC", "CADJPY-OTC"
+    "EURCAD-OTC", "GBPCAD-OTC", "GBPCHF-OTC", "AUDJPY-OTC", "CADJPY-OTC"
 ]
 
-MAX_DAILY_TRADES = 100
+MAX_DAILY_TRADES = 150
 MAX_LOSS_STREAK = 5
 PAUSE_TIME = 900
 MAX_RECONNECT_ATTEMPTS = 10
 RECONNECT_DELAY = 3
 
-FUERZA_MINIMA = 35
-TOLERANCIA_NIVEL = 0.0022
+# Parámetros ajustados para capturar más señales válidas
+FUERZA_MINIMA = 32
+TOLERANCIA_NIVEL = 0.0028
 VENTANA_NIVELES = 5
 
-# Tiempos seguros
-TIEMPO_ESPERA_EJECUCION = 0.05
-REINTENTOS_EJECUCION = 3
-TIEMPO_MINIMO_VALIDO = 55
+# ⏱️ EJECUCIÓN EN SEGUNDO 58‑59 O INICIO DE VELA
+TIEMPO_ESPERA_EJECUCION = 0.02
+REINTENTOS_EJECUCION = 4
+TIEMPO_MINIMO_VALIDO = 58   # Solo ejecuta si quedan ≥58s
 
 # Variables globales
 DAILY_TRADES = 0
@@ -57,7 +58,7 @@ LOSS_STREAK = 0
 LAST_LOSS = 0
 LAST_TRADE = None
 BOT_RUNNING = False
-SEÑAL_PENDIENTE = None  # Aquí guardamos la señal para la vela siguiente
+SEÑAL_PENDIENTE = None
 
 # ====================================================
 # 📱 FUNCIONES TELEGRAM
@@ -100,7 +101,7 @@ def listen_commands():
                 if text == "/start":
                     if not BOT_RUNNING:
                         BOT_RUNNING = True
-                        send("✅ <b>BOT INICIADO</b>\nEstrategia: Reversión S/R\nEjecución: SOLO en vela siguiente")
+                        send("✅ <b>BOT INICIADO</b>\nEstrategia: Reversión Bandas\nEjecución: EXACTA en vela siguiente")
                     else:
                         send("ℹ️ El bot ya está activo.")
                 elif text == "/stop":
@@ -179,8 +180,8 @@ def get_df(iq, pair, retries=2):
                     time.sleep(1)
                     continue
 
-            data = iq.get_candles(pair, TIMEFRAME_M1, 25, time.time())
-            if not data or len(data) < 8:
+            data = iq.get_candles(pair, TIMEFRAME_M1, 30, time.time())
+            if not data or len(data) < 10:
                 time.sleep(0.2)
                 continue
 
@@ -196,14 +197,14 @@ def get_df(iq, pair, retries=2):
     return None
 
 # ====================================================
-# 🚀 EJECUTAR OPERACIÓN
+# 🚀 EJECUCIÓN PRECISA
 # ====================================================
 def ejecutar_operacion(iq, monto, par, direccion, vencimiento):
     for intento in range(REINTENTOS_EJECUCION + 1):
         try:
             if not iq.check_connect():
                 iq = connect()
-                time.sleep(0.2)
+                time.sleep(0.1)
             
             tiempo_servidor = iq.get_server_timestamp()
             segundos_restantes = 60 - (tiempo_servidor % 60)
@@ -218,16 +219,16 @@ def ejecutar_operacion(iq, monto, par, direccion, vencimiento):
                 return True, trade_id
             
             if intento < REINTENTOS_EJECUCION:
-                time.sleep(0.2)
+                time.sleep(0.1)
 
         except Exception as e:
             if intento < REINTENTOS_EJECUCION:
-                time.sleep(0.2)
+                time.sleep(0.1)
     
     return False, None
 
 # ====================================================
-# 🧠 BUCLE PRINCIPAL - LÓGICA CORREGIDA
+# 🧠 BUCLE PRINCIPAL - DETECCIÓN + EJECUCIÓN SIGUIENTE VELA
 # ====================================================
 def main():
     global BOT_RUNNING, LOSS_STREAK, LAST_LOSS, DAILY_TRADES, LAST_TRADE, SEÑAL_PENDIENTE
@@ -235,12 +236,12 @@ def main():
 
     iq = connect()
     last_candle = None
-    send("ℹ️ <b>SISTEMA LISTO</b>\nEjecución programada para vela siguiente\nEnvía /start para operar")
+    send("ℹ️ <b>SISTEMA LISTO</b>\nEjecución: solo vela siguiente\nEnvía /start para operar")
 
     while True:
         try:
             if not BOT_RUNNING:
-                time.sleep(1)
+                time.sleep(0.5)
                 continue
 
             reset_day()
@@ -271,9 +272,7 @@ def main():
             sec = server_time % 60
             current_candle = int(server_time // 60)
 
-            # ==========================================
-            # ✅ EJECUTAR SEÑAL PENDIENTE AL INICIO DE LA VELA NUEVA
-            # ==========================================
+            # 🚀 EJECUTAR SEÑAL GUARDADA AL INICIO DE VELA SIGUIENTE
             if current_candle != last_candle:
                 last_candle = current_candle
                 
@@ -287,7 +286,7 @@ def main():
 
                     send(f"""🚀 <b>EJECUTANDO ENTRADA</b>
 💹 Activo: {pair}
-📍 Zona: {tipo_nivel.upper()}
+📍 Zona: {tipo_nivel}
 💪 Fuerza: {fuerza}/100
 📊 Tipo: {'🟢 COMPRA' if signal == 'call' else '🔴 VENTA'}
 ⏱️ Vencimiento: 1 minuto""")
@@ -296,7 +295,7 @@ def main():
 
                     if status:
                         DAILY_TRADES += 1
-                        send(f"✅ <b>OPERACIÓN ABIERTA</b> | Monto: ${BASE_AMOUNT:.2f} | Total: {DAILY_TRADES}/{MAX_DAILY_TRADES}")
+                        send(f"✅ <b>OPERACIÓN ABIERTA</b> | ${BASE_AMOUNT:.2f} | Total: {DAILY_TRADES}/{MAX_DAILY_TRADES}")
 
                         time.sleep(65)
                         try:
@@ -317,10 +316,8 @@ def main():
                     else:
                         send(f"❌ No se pudo ejecutar en {pair}")
 
-            # ==========================================
-            # 🔍 BUSCAR SEÑALES Y GUARDARLA PARA LA VELA SIGUIENTE
-            # ==========================================
-            if 10 <= sec <= 57:
+            # 🔍 BUSCAR SEÑALES Y GUARDARLA ENTRE 55‑58 SEGUNDOS
+            if 10 <= sec <= 58:
                 mejor_opcion = None
                 mayor_fuerza = 0
 
@@ -336,17 +333,17 @@ def main():
                             mayor_fuerza = fuerza
                             mejor_opcion = (pair, signal, fuerza, tipo_nivel)
 
-                # ✅ Guardamos la señal al final de la vela actual
-                if 54 <= sec <= 57 and mejor_opcion is not None:
+                # Guardar justo antes de que termine la vela
+                if 55 <= sec <= 58 and mejor_opcion is not None:
                     SEÑAL_PENDIENTE = mejor_opcion
                     pair, signal, fuerza, tipo_nivel = mejor_opcion
                     send(f"""🔍 <b>SEÑAL DETECTADA</b>
 💹 Activo: {pair}
-📍 Nivel: {tipo_nivel.upper()}
+📍 Nivel: {tipo_nivel}
 💪 Fuerza: {fuerza}/100
 ⏳ EJECUCIÓN: SIGUIENTE VELA""")
 
-            time.sleep(0.02)
+            time.sleep(0.015)
 
         except Exception as e:
             send(f"💥 Error: {str(e)} | Reiniciando...")
