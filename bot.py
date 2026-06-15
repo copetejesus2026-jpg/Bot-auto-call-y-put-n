@@ -19,9 +19,9 @@ logger = logging.getLogger(__name__)
 
 MONTO = 600
 EXPIRACION = 1
-VELA_SEG = 60
+VELA = 60
 FUERZA_MIN = 98
-REINTENTOS = 10
+REINTENTOS = 8
 ESPERA = 0.2
 SEG_DETECCION = 54
 SEG_INICIO = 56
@@ -42,11 +42,10 @@ def conectar(email, passw, nombre):
         iq = IQ_Option(email, passw)
         ok, razon = iq.connect()
         if ok:
-            time.sleep(1.5)
-            iq.change_balance("PRACTICE")
             time.sleep(1)
+            iq.change_balance("PRACTICE")
             saldo = round(iq.get_balance(), 2)
-            logger.info(f"✅ {nombre} | Saldo: ${saldo}")
+            logger.info(f"✅ {nombre} conectado | Saldo: ${saldo}")
             return iq, saldo
         else:
             logger.error(f"❌ {nombre}: {razon}")
@@ -57,19 +56,19 @@ def conectar(email, passw, nombre):
 
 def conectar_ambas():
     iq1, _ = conectar(os.getenv("IQ_EMAIL_1"), os.getenv("IQ_PASSWORD_1"), "CUENTA_1")
-    time.sleep(2.5)
+    time.sleep(2)
     iq2, _ = conectar(os.getenv("IQ_EMAIL_2"), os.getenv("IQ_PASSWORD_2"), "CUENTA_2")
     return (iq1, iq2) if (iq1 and iq2) else (None, None)
 
 # --------------------------
-# DATOS
+# DATOS DE MERCADO
 # --------------------------
 def velas(iq, activo):
     try:
         if not iq.check_connect():
             iq.connect()
-            time.sleep(0.3)
-        datos = iq.get_candles(activo, VELA_SEG, 50, time.time())
+            time.sleep(0.2)
+        datos = iq.get_candles(activo, VELA, 50, time.time())
         if not datos or len(datos) < 30:
             return None
         df = pd.DataFrame(datos)
@@ -103,7 +102,7 @@ def orden(iq, nombre, activo, dir, vela, res):
                 continue
             estado, id_op = iq.buy(MONTO, activo, dir, EXPIRACION)
             if estado and id_op > 0:
-                time.sleep(0.5)
+                time.sleep(0.4)
                 saldo = round(iq.get_balance(), 2)
                 logger.info(f"✅ {nombre} | ID: {id_op} | Saldo: ${saldo}")
                 ok = True
@@ -129,11 +128,11 @@ def iniciar():
     global ULTIMA_VELA, OP_C1, OP_C2
     iq1, iq2 = conectar_ambas()
     if not iq1 or not iq2:
-        logger.critical("❌ No se conectaron las cuentas")
+        logger.critical("❌ No se conectaron cuentas")
         return
 
     logger.info("="*60)
-    logger.info("🤖 BOT | MISMA ORDEN EN 2 CUENTAS | RAILWAY OK")
+    logger.info("🤖 BOT | MISMA ORDEN EN 2 CUENTAS")
     logger.info("="*60)
 
     senal = None
@@ -174,7 +173,6 @@ def iniciar():
 
                 r1 = {"ok":False}
                 r2 = {"ok":False}
-
                 t1 = Thread(target=orden, args=(iq1, "CUENTA_1", act, dir_final, vela_act, r1))
                 t2 = Thread(target=orden, args=(iq2, "CUENTA_2", act, dir_final, vela_act, r2))
                 t1.start(); t2.start(); t1.join(); t2.join()
