@@ -42,8 +42,8 @@ def get_reversal_signal(df):
     fuerza = min(fuerza, 100)
 
     if bullish(c1):
-        return ("call", fuerza, "FUERTE ALCISTA")
+        return ("call", fuerza, "ALCISTA")
     if bearish(c1):
-        return ("put", fuerza, "FUERTE BAJISTA")
+        return ("put", fuerza, "BAJISTA")
 
     return None
