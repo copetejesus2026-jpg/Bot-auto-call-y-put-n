@@ -36,7 +36,7 @@ ULTIMA_OPERACION_C1 = None
 ULTIMA_OPERACION_C2 = None
 
 # --------------------------
-# CONEXIÓN INDEPENDIENTE
+# CONEXIÓN 100% SEPARADA
 # --------------------------
 def conectar_cuenta(email, password, nombre):
     try:
@@ -58,11 +58,11 @@ def conectar_cuenta(email, password, nombre):
         return None, 0
 
 def conectar_ambas_cuentas():
-    iq1, saldo1 = conectar_cuenta(os.getenv("IQ_EMAIL_1"), os.getenv("IQ_PASSWORD_1"), "CUENTA_1")
+    iq1, _ = conectar_cuenta(os.getenv("IQ_EMAIL_1"), os.getenv("IQ_PASSWORD_1"), "CUENTA_1")
     time.sleep(2)
-    iq2, saldo2 = conectar_cuenta(os.getenv("IQ_EMAIL_2"), os.getenv("IQ_PASSWORD_2"), "CUENTA_2")
+    iq2, _ = conectar_cuenta(os.getenv("IQ_EMAIL_2"), os.getenv("IQ_PASSWORD_2"), "CUENTA_2")
     time.sleep(2)
-    return iq1, iq2 if iq1 and iq2 else (None, None)
+    return (iq1, iq2) if (iq1 and iq2) else (None, None)
 
 # --------------------------
 # DATOS DE MERCADO
@@ -185,7 +185,7 @@ def iniciar_bot():
                 res2 = {"ok": False, "id": None, "saldo": None}
 
                 t1 = Thread(target=ejecutar_orden_en_cuenta, args=(iq1, "CUENTA_1", activo, dir_final, vela_actual, res1))
-                t2 = Thread(target=ejecutar_orden_en_cuenta, args=(iq2, "CUENTA_2", activo, dir_final, vela_actual, res2))
+                t2 = Thread(target=ejecutar_orden_en_cuenta, args=(iq2, "CUENTA_2", activo, dir_final, vela_id, res2))
                 t1.start()
                 t2.start()
                 t1.join()
