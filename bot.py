@@ -6,7 +6,6 @@ import asyncio
 from threading import Thread
 from iqoptionapi.stable_api import IQ_Option
 from telegram import Bot
-from telegram.ext import Updater, CommandHandler
 from telegram.error import TelegramError
 from strategy import get_reversal_signal
 
@@ -55,7 +54,7 @@ CUENTA_ANALISIS = 1
 
 # Configuración Telegram
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")  # ID de tu grupo
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 # --------------------------
 # CONEXIÓN CUENTAS IQ OPTION
@@ -91,48 +90,65 @@ def conectar_ambas():
     return iq1, iq2
 
 # --------------------------
-# FUNCIONES TELEGRAM
+# FUNCIONES TELEGRAM (SIN CONFLICTOS)
 # --------------------------
 def enviar_mensaje_telegram(texto):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         return
     try:
         bot = Bot(token=TELEGRAM_TOKEN)
-        bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=texto, parse_mode="HTML")
+        bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=texto, parse_mode="HTML", disable_notification=False)
     except TelegramError as e:
-        logger.warning(f"⚠️ No se pudo enviar mensaje a Telegram: {e}")
+        logger.warning(f"⚠️ Telegram: {e}")
 
-def cmd_start(update, context):
+async def escuchar_comandos_seguro():
+    """Método sin conflictos, limpia actualizaciones pendientes"""
     global BOT_ACTIVO, OPERACIONES_C1, OPERACIONES_C2
-    if BOT_ACTIVO:
-        update.message.reply_text("ℹ️ El bot ya está en ejecución")
-        return
-    OPERACIONES_C1 = 0
-    OPERACIONES_C2 = 0
-    BOT_ACTIVO = True
-    Thread(target=bucle_principal, daemon=True).start()
-    update.message.reply_text("✅ Bot INICIADO. Realizará 15 operaciones en cada cuenta.")
-
-def cmd_stop(update, context):
-    global BOT_ACTIVO
-    BOT_ACTIVO = False
-    update.message.reply_text("⏹️ Bot DETENIDO.")
-
-def iniciar_comandos_telegram():
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        logger.warning("⚠️ Sin credenciales de Telegram, funcionará sin control remoto")
+        logger.warning("⚠️ Sin credenciales de Telegram")
         return
+
+    bot = Bot(token=TELEGRAM_TOKEN)
+    # Eliminar todas las solicitudes pendientes al inicio
     try:
-        updater = Updater(token=TELEGRAM_TOKEN, use_context=True)
-        dp = updater.dispatcher
-        dp.add_handler(CommandHandler("start", cmd_start))
-        dp.add_handler(CommandHandler("stop", cmd_stop))
-        updater.start_polling(drop_pending_updates=True)  # ✅ Evita conflictos
-        logger.info("📡 Conectado a Telegram sin conflictos")
-        enviar_mensaje_telegram("🤖 Bot listo. Usa /start para operar y /stop para detener.")
-        updater.idle()
+        await bot.get_updates(offset=-1, timeout=1)
+        await bot.get_updates(offset=0, timeout=1)
+        logger.info("📡 Telegram listo, sin conflictos")
+        await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text="🤖 Bot listo. Escribe /start para iniciar y /stop para detener.")
     except Exception as e:
-        logger.error(f"❌ Error al iniciar Telegram: {e}")
+        logger.warning(f"⚠️ Inicio Telegram: {e}")
+
+    while True:
+        try:
+            updates = await bot.get_updates(offset=None, timeout=10)
+            for upd in updates:
+                if not upd.message or str(upd.message.chat_id) != str(TELEGRAM_CHAT_ID):
+                    continue
+                texto = upd.message.text.strip().lower()
+
+                if texto == "/start":
+                    if not BOT_ACTIVO:
+                        OPERACIONES_C1 = 0
+                        OPERACIONES_C2 = 0
+                        BOT_ACTIVO = True
+                        Thread(target=bucle_principal, daemon=True).start()
+                        await bot.send_message(TELEGRAM_CHAT_ID, text="✅ Bot INICIADO. Hará 15 operaciones en cada cuenta.")
+                    else:
+                        await bot.send_message(TELEGRAM_CHAT_ID, text="ℹ️ El bot ya está funcionando.")
+
+                elif texto == "/stop":
+                    BOT_ACTIVO = False
+                    await bot.send_message(TELEGRAM_CHAT_ID, text="⏹️ Bot DETENIDO.")
+
+                # Actualizar offset para no repetir mensajes
+                offset = upd.update_id + 1
+                await bot.get_updates(offset=offset, timeout=1)
+
+        except Exception as e:
+            # Ignorar error de conflicto y seguir intentando
+            if "Conflict" not in str(e):
+                logger.warning(f"⚠️ Telegram: {e}")
+        await asyncio.sleep(2)
 
 # --------------------------
 # DATOS DE MERCADO
@@ -201,11 +217,11 @@ def ejecutar_orden(iq, nombre, activo, direccion, vela_actual, resultado):
         if nombre == "CUENTA_1":
             OP_VELA_C1 = vela_actual
             OPERACIONES_C1 += 1
-            enviar_mensaje_telegram(f"📊 CUENTA 1: {OPERACIONES_C1}/15 operaciones completadas")
+            enviar_mensaje_telegram(f"📊 CUENTA 1: {OPERACIONES_C1}/15 completadas")
         else:
             OP_VELA_C2 = vela_actual
             OPERACIONES_C2 += 1
-            enviar_mensaje_telegram(f"📊 CUENTA 2: {OPERACIONES_C2}/15 operaciones completadas")
+            enviar_mensaje_telegram(f"📊 CUENTA 2: {OPERACIONES_C2}/15 completadas")
         resultado.update({"ok": True, "id": id_operacion, "saldo": saldo_final})
     else:
         resultado["ok"] = False
@@ -218,17 +234,17 @@ def bucle_principal():
     global BOT_ACTIVO, ULTIMA_VELA, OP_VELA_C1, OP_VELA_C2, OPERACIONES_C1, OPERACIONES_C2, CUENTA_ANALISIS
     iq1, iq2 = conectar_ambas()
     if not iq1 or not iq2:
-        enviar_mensaje_telegram("❌ No se pudieron conectar ambas cuentas, deteniendo operación")
+        enviar_mensaje_telegram("❌ No se pudieron conectar ambas cuentas, bot detenido")
         BOT_ACTIVO = False
         return
 
-    enviar_mensaje_telegram("🤖 BOT ACTIVO | 15 operaciones por cuenta | Analizando señales...")
+    enviar_mensaje_telegram("🤖 BOT ACTIVO | Analizando señales...")
     senal_actual = None
 
     while BOT_ACTIVO:
         try:
             if OPERACIONES_C1 >= MAX_OPER_C1 and OPERACIONES_C2 >= MAX_OPER_C2:
-                mensaje = "✅ ¡OBJETIVO CUMPLIDO! 15 operaciones en cada cuenta. Bot detenido automáticamente."
+                mensaje = "✅ ¡OBJETIVO CUMPLIDO! 15 operaciones en cada cuenta. Bot detenido."
                 logger.info(mensaje)
                 enviar_mensaje_telegram(mensaje)
                 BOT_ACTIVO = False
@@ -271,7 +287,7 @@ def bucle_principal():
 
             if senal_actual and SEG_INICIO <= segundos <= SEG_FIN:
                 activo, dir_final, fuerza = senal_actual
-                logger.info("🚀 Enviando operaciones a ambas cuentas...")
+                logger.info("🚀 Enviando operaciones...")
 
                 res1 = {"ok": False}
                 res2 = {"ok": False}
@@ -291,7 +307,7 @@ def bucle_principal():
             time.sleep(0.05)
 
         except Exception as e:
-            mensaje = f"💥 Error en el bucle: {str(e)} | Reintentando conexión..."
+            mensaje = f"💥 Error: {str(e)} | Reconectando..."
             logger.error(mensaje)
             enviar_mensaje_telegram(mensaje)
             iq1, iq2 = conectar_ambas()
@@ -301,4 +317,4 @@ def bucle_principal():
 # EJECUCIÓN PRINCIPAL
 # --------------------------
 if __name__ == "__main__":
-    iniciar_comandos_telegram()
+    asyncio.run(escuchar_comandos_seguro())
