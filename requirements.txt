@@ -1,5 +1,7 @@
+# Usamos la versión oficial directamente desde GitHub
 git+https://github.com/iqoptionapi/iqoptionapi.git
-pandas
-numpy
-requests
-websocket-client==0.56
+pandas==2.1.4
+numpy==1.26.4
+requests==2.31.0
+websocket-client==0.56.0
+python-dotenv==1.0.1
