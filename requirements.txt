@@ -1,5 +1,10 @@
+# API oficial IQ Option
 git+https://github.com/iqoptionapi/iqoptionapi.git
-pandas
-numpy
-requests
+
+# Librerías de datos y cálculos
+pandas>=2.2.0
+numpy>=1.26.0
+
+# Conexión y comunicación
+requests>=2.31.0
 websocket-client==0.56
