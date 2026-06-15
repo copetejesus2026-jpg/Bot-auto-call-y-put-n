@@ -2,7 +2,6 @@ import time
 import os
 import pandas as pd
 import logging
-import copy
 from iqoptionapi.stable_api import IQ_Option
 
 from strategy import get_reversal_signal
@@ -25,8 +24,8 @@ EXPIRACION = 1
 TIEMPO_VELA = 60
 FUERZA_MINIMA = 98
 REINTENTOS_MAX = 8
-ESPERA_REINTENTO = 0.15
-ESPERA_ENTRE_CUENTAS = 0.3
+ESPERA_REINTENTO = 0.1
+ESPERA_ENTRE_CUENTAS = 0.1  # Menor espera para mayor sincronía
 SEGUNDO_DETECCION = 55
 SEGUNDO_INICIO = 56
 SEGUNDO_FIN = 59
@@ -38,22 +37,20 @@ ULTIMA_VELA_PROCESADA = None
 ULTIMA_OPERACION = {"CUENTA_1": None, "CUENTA_2": None}
 
 # --------------------------
-# CONEXIÓN TOTALMENTE INDEPENDIENTE POR CUENTA
+# CONEXIÓN 100% INDEPENDIENTE
 # --------------------------
 def conectar_cuenta(email, password, nombre):
     try:
         logger.info(f"🔄 Conectando {nombre}...")
-        # Instancia NUEVA y separada para cada cuenta
         iq = IQ_Option(email, password)
         conectado, motivo = iq.connect()
 
         if conectado:
-            time.sleep(0.8)
-            # Forzar cambio de saldo y verificar
+            time.sleep(0.6)
             iq.change_balance("PRACTICE")
-            time.sleep(0.8)
+            time.sleep(0.6)
             saldo = round(iq.get_balance(), 2)
-            logger.info(f"✅ {nombre} | Correo: {email} | Saldo: ${saldo}")
+            logger.info(f"✅ {nombre} | Correo: {email} | Saldo inicial: ${saldo}")
             return iq, saldo
         else:
             logger.error(f"❌ {nombre} no conectó: {motivo}")
@@ -84,11 +81,10 @@ def conectar_cuentas():
         iq, saldo = conectar_cuenta(correo, clave, nombre)
         if iq and saldo >= MONTO_POR_OPERACION:
             cuentas.append({"nombre": nombre, "conexion": iq, "saldo": saldo})
-        # Espera mayor para evitar mezcla de sesiones
-        time.sleep(1.2)
+        time.sleep(0.8)
 
     if len(cuentas) != 2:
-        logger.critical(f"⚠️ Solo {len(cuentas)} cuentas conectadas. Se requieren 2")
+        logger.critical(f"⚠️ Solo {len(cuentas)} cuentas conectadas. Se requieren 2 para operar")
     return cuentas
 
 # --------------------------
@@ -113,7 +109,7 @@ def obtener_datos(iq, activo):
         return None
 
 # --------------------------
-# EJECUTAR ORDEN EN CADA CUENTA
+# EJECUTAR ORDEN EN CUENTA
 # --------------------------
 def ejecutar_orden(cuenta, activo, direccion, vela_id):
     nombre = cuenta["nombre"]
@@ -121,28 +117,29 @@ def ejecutar_orden(cuenta, activo, direccion, vela_id):
 
     if ULTIMA_OPERACION[nombre] == vela_id:
         logger.info(f"🔒 {nombre}: Ya operó en esta vela, omitiendo")
-        return False
+        return False, None
 
-    logger.info(f"🚀 Enviando orden a {nombre}: {activo} | {direccion} | ${MONTO_POR_OPERACION}")
+    logger.info(f"📤 Enviando orden a {nombre}: {activo} | {direccion} | ${MONTO_POR_OPERACION}")
 
     for intento in range(REINTENTOS_MAX):
         try:
             if not iq.check_connect():
                 iq.connect()
-                time.sleep(0.2)
+                time.sleep(0.1)
 
             activos_disponibles = iq.get_all_ACTIVES_OPCODE()
             if activo not in activos_disponibles:
                 logger.warning(f"⚠️ {nombre}: {activo} no disponible, reintentando...")
-                time.sleep(0.3)
+                time.sleep(0.2)
                 continue
 
             estado, id_op = iq.buy(MONTO_POR_OPERACION, activo, direccion, EXPIRACION)
             if estado and id_op > 0:
                 ULTIMA_OPERACION[nombre] = vela_id
+                time.sleep(0.3)
                 saldo_actual = round(iq.get_balance(), 2)
-                logger.info(f"✅ {nombre} | Ejecutado | ID: {id_op} | Saldo actual: ${saldo_actual}")
-                return True
+                logger.info(f"✅ {nombre} | Ejecutado | ID: {id_op} | Saldo: ${saldo_actual}")
+                return True, saldo_actual
 
             time.sleep(ESPERA_REINTENTO)
 
@@ -150,8 +147,8 @@ def ejecutar_orden(cuenta, activo, direccion, vela_id):
             logger.warning(f"⚠️ {nombre} | Intento {intento+1}: {str(e)}")
             time.sleep(ESPERA_REINTENTO)
 
-    logger.error(f"❌ {nombre} | Falló operación en {activo}")
-    return False
+    logger.error(f"❌ {nombre} | NO SE PUDO EJECUTAR ORDEN en {activo}")
+    return False, None
 
 # --------------------------
 # BUCLE PRINCIPAL
@@ -161,12 +158,13 @@ def iniciar_bot():
     CUENTAS = conectar_cuentas()
 
     if len(CUENTAS) != 2:
+        logger.critical("❌ NO SE PUEDE OPERAR: Faltan cuentas")
         return
 
-    logger.info("="*60)
-    logger.info("🤖 BOT ACTIVO | 2 CUENTAS INDEPENDIENTES | SIN MEZCLA")
-    logger.info(f"⚙️ Fuerza ≥ {FUERZA_MINIMA} | Entrada: {SEGUNDO_INICIO}-{SEGUNDO_FIN}s")
-    logger.info("="*60)
+    logger.info("="*70)
+    logger.info("🤖 BOT ACTIVO | MISMA ORDEN A AMBAS CUENTAS | BLOQUEO SI FALTA UNA")
+    logger.info(f"⚙️ Fuerza mínima: {FUERZA_MINIMA} | Entrada: {SEGUNDO_INICIO}-{SEGUNDO_FIN}s")
+    logger.info("="*70)
 
     senal_guardada = None
 
@@ -183,7 +181,7 @@ def iniciar_bot():
                 ULTIMA_VELA_PROCESADA = vela_actual
                 senal_guardada = None
 
-            # Detectar señal en segundo 55
+            # Detectar señal
             if segundos == SEGUNDO_DETECCION:
                 mejor = None
                 mayor_fuerza = 0
@@ -203,31 +201,34 @@ def iniciar_bot():
                     activo, dir_ori, fuerza = mejor
                     dir_final = "put" if dir_ori == "call" else "call"
                     senal_guardada = (activo, dir_final, fuerza)
-                    logger.info(f"✅ Señal lista: {activo} | {dir_final} | Fuerza: {fuerza}")
+                    logger.info(f"✅ Señal confirmada: {activo} | {dir_final} | Fuerza: {fuerza}")
 
-            # Ejecutar en AMBAS cuentas
+            # Ejecutar solo si hay señal y estamos en el rango
             if senal_guardada and SEGUNDO_INICIO <= segundos <= SEGUNDO_FIN:
                 activo, dir_final, fuerza = senal_guardada
-                logger.info(f"🎯 ENTRANDO EN AMBAS CUENTAS: {activo} | {dir_final}")
+                logger.info(f"🚀 ENVIANDO MISMA ORDEN A AMBAS CUENTAS: {activo} | {dir_final}")
 
-                # Ejecutar en CUENTA 1
-                ok1 = ejecutar_orden(CUENTAS[0], activo, dir_final, vela_actual)
+                # Ejecutar en cuenta 1
+                ok1, saldo1 = ejecutar_orden(CUENTAS[0], activo, dir_final, vela_actual)
                 time.sleep(ESPERA_ENTRE_CUENTAS)
 
-                # Ejecutar en CUENTA 2
-                ok2 = ejecutar_orden(CUENTAS[1], activo, dir_final, vela_actual)
+                # Ejecutar en cuenta 2
+                ok2, saldo2 = ejecutar_orden(CUENTAS[1], activo, dir_final, vela_actual)
 
-                # Resumen final
+                # Verificación final
                 if ok1 and ok2:
-                    logger.info("✅✅ AMBAS CUENTAS EJECUTADAS CORRECTAMENTE")
+                    logger.info("="*70)
+                    logger.info("✅✅ ÉXITO: AMBAS CUENTAS RECIBIERON LA MISMA ORDEN")
+                    logger.info(f"💵 CUENTA 1: ${saldo1} | CUENTA 2: ${saldo2}")
+                    logger.info("="*70)
                 elif ok1:
-                    logger.warning("⚠️ Solo CUENTA 1 operó")
+                    logger.critical("⛔ BLOQUEADO: SOLO SE EJECUTÓ EN CUENTA 1 - NO SE CONSIDERA VÁLIDA")
                 elif ok2:
-                    logger.warning("⚠️ Solo CUENTA 2 operó")
+                    logger.critical("⛔ BLOQUEADO: SOLO SE EJECUTÓ EN CUENTA 2 - NO SE CONSIDERA VÁLIDA")
                 else:
-                    logger.error("❌ Ninguna cuenta operó")
+                    logger.critical("⛔ BLOQUEADO: NO SE EJECUTÓ EN NINGUNA CUENTA")
 
-                senal_guardada = None
+                senal_guardada = None  # Limpiar para siguiente vela
 
             time.sleep(0.05)
 
