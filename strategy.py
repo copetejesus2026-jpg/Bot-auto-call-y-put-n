@@ -3,13 +3,10 @@ import pandas as pd
 
 def body(c):
     return abs(c["close"] - c["open"])
-
 def range_c(c):
     return c["high"] - c["low"]
-
 def bullish(c):
     return c["close"] > c["open"]
-
 def bearish(c):
     return c["close"] < c["open"]
 
