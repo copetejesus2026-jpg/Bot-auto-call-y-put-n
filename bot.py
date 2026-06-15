@@ -6,7 +6,9 @@ from iqoptionapi.stable_api import IQ_Option
 
 from strategy import get_reversal_signal
 
-# Configuración de logs
+# --------------------------
+# CONFIGURACIÓN DE LOGS
+# --------------------------
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s",
@@ -14,7 +16,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ⚙️ CONFIGURACIÓN
+# --------------------------
+# PARÁMETROS DE OPERACIÓN
+# --------------------------
 MONTO_POR_OPERACION = 600
 EXPIRACION = 1
 TIEMPO_VELA = 60
@@ -32,9 +36,9 @@ ACTIVOS = ["EURUSD-OTC", "GBPUSD-OTC", "USDJPY-OTC"]
 ULTIMA_VELA_PROCESADA = None
 ULTIMA_OPERACION = {"CUENTA_1": None, "CUENTA_2": None}
 
-# ==============================
-# CONEXIÓN 100% INDEPENDIENTE
-# ==============================
+# --------------------------
+# CONEXIÓN INDEPENDIENTE POR CUENTA
+# --------------------------
 def conectar_cuenta(email, password, nombre):
     try:
         logger.info(f"🔄 Conectando {nombre}...")
@@ -72,7 +76,7 @@ def conectar_cuentas():
 
     for nombre, correo, clave in credenciales:
         if not correo or not clave:
-            logger.error(f"{nombre}: Faltan credenciales")
+            logger.error(f"{nombre}: Faltan credenciales en variables de entorno")
             continue
         iq, saldo = conectar_cuenta(correo, clave, nombre)
         if iq and saldo >= MONTO_POR_OPERACION:
@@ -83,9 +87,9 @@ def conectar_cuentas():
         logger.critical(f"⚠️ Solo {len(cuentas)} cuentas conectadas. Se requieren 2")
     return cuentas
 
-# ==============================
-# OBTENER DATOS (VERIFICACIÓN CORREGIDA)
-# ==============================
+# --------------------------
+# OBTENER DATOS DE VELAS
+# --------------------------
 def obtener_datos(iq, activo):
     try:
         if not iq.check_connect():
@@ -97,7 +101,6 @@ def obtener_datos(iq, activo):
         df = pd.DataFrame(velas)
         df.rename(columns={"max": "high", "min": "low"}, inplace=True)
         df[["open", "close", "high", "low"]] = df[["open", "close", "high", "low"]].astype(float)
-        # ✅ Verificación segura para Pandas
         if df.empty:
             return None
         return df
@@ -105,9 +108,9 @@ def obtener_datos(iq, activo):
         logger.error(f"⚠️ Error en {activo}: {e}")
         return None
 
-# ==============================
-# EJECUTAR ORDEN
-# ==============================
+# --------------------------
+# EJECUTAR ORDEN EN CUENTA
+# --------------------------
 def ejecutar_orden(cuenta, activo, direccion, vela_id):
     nombre = cuenta["nombre"]
     iq = cuenta["conexion"]
@@ -124,9 +127,9 @@ def ejecutar_orden(cuenta, activo, direccion, vela_id):
                 iq.connect()
                 time.sleep(0.15)
 
-            activos = iq.get_all_ACTIVES_OPCODE()
-            if activo not in activos:
-                logger.warning(f"⚠️ {nombre}: {activo} no disponible")
+            activos_disponibles = iq.get_all_ACTIVES_OPCODE()
+            if activo not in activos_disponibles:
+                logger.warning(f"⚠️ {nombre}: {activo} no disponible, reintentando...")
                 time.sleep(0.2)
                 continue
 
@@ -142,12 +145,12 @@ def ejecutar_orden(cuenta, activo, direccion, vela_id):
             logger.warning(f"⚠️ {nombre} | Intento {intento+1}: {str(e)}")
             time.sleep(ESPERA_REINTENTO)
 
-    logger.error(f"❌ {nombre} | Falló {activo}")
+    logger.error(f"❌ {nombre} | Falló operación en {activo}")
     return False
 
-# ==============================
-# BUCLE PRINCIPAL SIN ERRORES
-# ==============================
+# --------------------------
+# BUCLE PRINCIPAL CORREGIDO
+# --------------------------
 def iniciar_bot():
     global ULTIMA_VELA_PROCESADA, ULTIMA_OPERACION
     CUENTAS = conectar_cuentas()
@@ -156,9 +159,11 @@ def iniciar_bot():
         return
 
     logger.info("="*60)
-    logger.info("🤖 BOT CORREGIDO | 2 CUENTAS INDEPENDIENTES | SIN ERRORES")
-    logger.info(f"⚙️ Fuerza ≥ {FUERZA_MINIMA} | Entrada: {SEGUNDO_INICIO}-{SEGUNDO_FIN}s")
+    logger.info("🤖 BOT ACTIVO | 2 CUENTAS INDEPENDIENTES | EJECUCIÓN CORRECTA")
+    logger.info(f"⚙️ Fuerza mínima: {FUERZA_MINIMA} | Entrada: {SEGUNDO_INICIO}-{SEGUNDO_FIN}s")
     logger.info("="*60)
+
+    senal_guardada = None  # Variable para guardar la señal hasta el momento de ejecutar
 
     while True:
         try:
@@ -167,44 +172,54 @@ def iniciar_bot():
             segundos = int(tiempo_servidor % 60)
             vela_actual = int(tiempo_servidor // 60)
 
+            # Reiniciar datos al empezar nueva vela
             if vela_actual != ULTIMA_VELA_PROCESADA:
                 ULTIMA_OPERACION = {"CUENTA_1": None, "CUENTA_2": None}
                 ULTIMA_VELA_PROCESADA = vela_actual
+                senal_guardada = None
 
+            # Paso 1: Detectar y GUARDAR la señal en el segundo 55
             if segundos == SEGUNDO_DETECCION:
                 mejor = None
                 mayor_fuerza = 0
                 logger.info("🔍 Buscando señales...")
                 for activo in ACTIVOS:
                     df = obtener_datos(iq_ref, activo)
-                    # ✅ Verificación segura para evitar el error
                     if df is None or df.empty:
                         continue
-                    res = get_reversal_signal(df)
-                    if res:
-                        dir_, fuerza, _ = res
+                    resultado = get_reversal_signal(df)
+                    if resultado:
+                        dir_ori, fuerza, _ = resultado
                         if fuerza >= FUERZA_MINIMA and fuerza > mayor_fuerza:
                             mayor_fuerza = fuerza
-                            mejor = (activo, dir_, fuerza)
+                            mejor = (activo, dir_ori, fuerza)
 
                 if mejor:
                     activo, dir_ori, fuerza = mejor
                     dir_final = "put" if dir_ori == "call" else "call"
-                    logger.info(f"✅ Señal válida: {activo} | {dir_final} | Fuerza: {fuerza}")
+                    senal_guardada = (activo, dir_final, fuerza)
+                    logger.info(f"✅ Señal GUARDADA: {activo} | {dir_final} | Fuerza: {fuerza}")
 
-                    if SEGUNDO_INICIO <= segundos <= SEGUNDO_FIN:
-                        ok1 = ejecutar_orden(CUENTAS[0], activo, dir_final, vela_actual)
-                        time.sleep(ESPERA_ENTRE_CUENTAS)
-                        ok2 = ejecutar_orden(CUENTAS[1], activo, dir_final, vela_actual)
+            # Paso 2: Ejecutar en el rango 56-59 con la señal guardada
+            if senal_guardada and SEGUNDO_INICIO <= segundos <= SEGUNDO_FIN:
+                activo, dir_final, fuerza = senal_guardada
+                logger.info(f"🎯 ENTRANDO: {activo} | {dir_final} | Fuerza: {fuerza}")
 
-                        if ok1 and ok2:
-                            logger.info("✅✅ AMBAS CUENTAS EJECUTADAS CORRECTAMENTE")
-                        elif ok1:
-                            logger.warning("⚠️ Solo CUENTA 1 operó")
-                        elif ok2:
-                            logger.warning("⚠️ Solo CUENTA 2 operó")
-                        else:
-                            logger.error("❌ Ninguna cuenta operó")
+                ok1 = ejecutar_orden(CUENTAS[0], activo, dir_final, vela_actual)
+                time.sleep(ESPERA_ENTRE_CUENTAS)
+                ok2 = ejecutar_orden(CUENTAS[1], activo, dir_final, vela_actual)
+
+                # Resultado final
+                if ok1 and ok2:
+                    logger.info("✅✅ AMBAS CUENTAS EJECUTADAS CORRECTAMENTE")
+                elif ok1:
+                    logger.warning("⚠️ Solo CUENTA_1 operó")
+                elif ok2:
+                    logger.warning("⚠️ Solo CUENTA_2 operó")
+                else:
+                    logger.error("❌ Ninguna cuenta operó")
+
+                senal_guardada = None  # Limpiar para no repetir
 
             time.sleep(0.05)
 
