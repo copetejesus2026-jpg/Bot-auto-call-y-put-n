@@ -136,7 +136,7 @@ def escuchar_comandos():
                         OPERACIONES_C2 = 0
                         BOT_ACTIVO = True
                         Thread(target=bucle_principal, daemon=True).start()
-                        enviar_mensaje_telegram("✅ Bot INICIADO. Hará 15 operaciones en cada cuenta.")
+                        enviar_mensaje_telegram("✅ Bot INICIADO. Hará 15 operaciones en cada cuenta. CUENTA_2 invierte la dirección.")
                     else:
                         enviar_mensaje_telegram("ℹ️ Ya está activo.")
 
@@ -184,12 +184,14 @@ def ejecutar_orden(iq, nombre, activo, direccion, vela_actual, resultado):
         if OP_VELA_C1 == vela_actual or OPERACIONES_C1 >= MAX_OPER_C1:
             resultado["ok"] = False
             return
+        dir_final = direccion  # ✅ Cuenta 1: dirección normal
     else:
         if OP_VELA_C2 == vela_actual or OPERACIONES_C2 >= MAX_OPER_C2:
             resultado["ok"] = False
             return
+        dir_final = "put" if direccion == "call" else "call"  # ✅ Cuenta 2: dirección INVERTIDA
 
-    logger.info(f"📤 Enviando a {nombre}: {activo} {direccion} ${MONTO}")
+    logger.info(f"📤 Enviando a {nombre}: {activo} {dir_final} ${MONTO}")
     exito = False
     saldo_final = id_op = None
 
@@ -203,11 +205,11 @@ def ejecutar_orden(iq, nombre, activo, direccion, vela_actual, resultado):
                 logger.warning(f"⚠️ {activo} no disponible")
                 time.sleep(0.3)
                 continue
-            estado, id_op = iq.buy(MONTO, activo, direccion, EXPIRACION)
+            estado, id_op = iq.buy(MONTO, activo, dir_final, EXPIRACION)
             if estado and id_op > 0:
                 time.sleep(0.4)
                 saldo_final = round(iq.get_balance(), 2)
-                mensaje = f"✅ {nombre} | {activo} {direccion} | ID: {id_op} | Saldo: ${saldo_final}"
+                mensaje = f"✅ {nombre} | {activo} {dir_final} | ID: {id_op} | Saldo: ${saldo_final}"
                 logger.info(mensaje)
                 enviar_mensaje_telegram(mensaje)
                 exito = True
@@ -225,7 +227,7 @@ def ejecutar_orden(iq, nombre, activo, direccion, vela_actual, resultado):
         else:
             OP_VELA_C2 = vela_actual
             OPERACIONES_C2 += 1
-            enviar_mensaje_telegram(f"📊 C2: {OPERACIONES_C2}/15 completadas")
+            enviar_mensaje_telegram(f"📊 C2: {OPERACIONES_C2}/15 completadas | Dirección invertida")
         resultado.update({"ok": True, "id": id_op, "saldo": saldo_final})
     else:
         resultado["ok"] = False
@@ -281,24 +283,23 @@ def bucle_principal():
 
                 if mejor:
                     act, dir_ori, f = mejor
-                    dir_final = "put" if dir_ori == "call" else "call"
-                    senal = (act, dir_final, f)
-                    enviar_mensaje_telegram(f"🔔 Señal: {act} {dir_final} | Fuerza: {f}%")
+                    senal = (act, dir_ori, f)
+                    enviar_mensaje_telegram(f"🔔 Señal original: {act} {dir_ori} | Fuerza: {f}%")
 
             if senal and SEG_INICIO <= seg <= SEG_FIN:
-                act, dir_final, f = senal
+                act, dir_ori, f = senal
                 logger.info("🚀 Enviando órdenes")
 
                 res1 = {"ok": False}
                 res2 = {"ok": False}
 
                 if OPERACIONES_C1 < MAX_OPER_C1:
-                    t1 = Thread(target=ejecutar_orden, args=(iq1, "CUENTA_1", act, dir_final, vela_act, res1))
+                    t1 = Thread(target=ejecutar_orden, args=(iq1, "CUENTA_1", act, dir_ori, vela_act, res1))
                     t1.start()
                     t1.join()
 
                 if OPERACIONES_C2 < MAX_OPER_C2:
-                    t2 = Thread(target=ejecutar_orden, args=(iq2, "CUENTA_2", act, dir_final, vela_act, res2))
+                    t2 = Thread(target=ejecutar_orden, args=(iq2, "CUENTA_2", act, dir_ori, vela_act, res2))
                     t2.start()
                     t2.join()
 
