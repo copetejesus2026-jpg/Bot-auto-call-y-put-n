@@ -2,13 +2,13 @@ import time
 import os
 import pandas as pd
 import logging
-from threading import Thread, Lock
+from threading import Thread
 from iqoptionapi.stable_api import IQ_Option
 
 from strategy import get_reversal_signal
 
 # --------------------------
-# CONFIGURACIÓN
+# CONFIGURACIÓN GENERAL
 # --------------------------
 logging.basicConfig(
     level=logging.INFO,
@@ -17,39 +17,42 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Parámetros
+# --------------------------
+# PARÁMETROS DE OPERACIÓN
+# --------------------------
 MONTO_POR_OPERACION = 600
 EXPIRACION = 1
 TIEMPO_VELA = 60
 FUERZA_MINIMA = 98
 REINTENTOS_MAX = 10
-ESPERA_REINTENTO = 0.2
+ESPERA_REINTENTO = 0.15
 SEGUNDO_DETECCION = 54
 SEGUNDO_INICIO = 56
 SEGUNDO_FIN = 59
 
 ACTIVOS = ["EURUSD-OTC", "GBPUSD-OTC", "USDJPY-OTC"]
 
-# Control
+# Control de ejecución por cuenta
 ULTIMA_VELA_PROCESADA = None
-ULTIMA_OPERACION = {"CUENTA_1": None, "CUENTA_2": None}
-lock = Lock()
+ULTIMA_OPERACION_C1 = None
+ULTIMA_OPERACION_C2 = None
 
 # --------------------------
-# CONEXIÓN 100% AISLADA
+# CONEXIÓN 100% INDEPENDIENTE POR CUENTA
 # --------------------------
 def conectar_cuenta(email, password, nombre):
     try:
         logger.info(f"🔄 Conectando {nombre}...")
-        # Forzamos instancia totalmente nueva
+        # Instancia NUEVA y exclusiva para cada cuenta
         iq = IQ_Option(email, password)
         conectado, motivo = iq.connect()
+
         if conectado:
             time.sleep(1)
             iq.change_balance("PRACTICE")
             time.sleep(1)
             saldo = round(iq.get_balance(), 2)
-            logger.info(f"✅ {nombre} | Correo: {email} | Saldo: ${saldo}")
+            logger.info(f"✅ {nombre} | Correo: {email} | Saldo inicial: ${saldo}")
             return iq, saldo
         else:
             logger.error(f"❌ {nombre} no conectó: {motivo}")
@@ -58,33 +61,27 @@ def conectar_cuenta(email, password, nombre):
         logger.error(f"❌ Error en {nombre}: {str(e)}")
         return None, 0
 
-def conectar_cuentas():
-    cuentas = []
-    credenciales = [
-        ("CUENTA_1", os.getenv("IQ_EMAIL_1"), os.getenv("IQ_PASSWORD_1")),
-        ("CUENTA_2", os.getenv("IQ_EMAIL_2"), os.getenv("IQ_PASSWORD_2"))
-    ]
-    for nombre, correo, clave in credenciales:
-        if not correo or not clave:
-            logger.error(f"{nombre}: Sin credenciales")
-            continue
-        iq, saldo = conectar_cuenta(correo, clave, nombre)
-        if iq and saldo >= MONTO_POR_OPERACION:
-            cuentas.append({"nombre": nombre, "conexion": iq, "saldo": saldo})
-        # Espera mayor para evitar mezcla de sesiones
-        time.sleep(2)
-    if len(cuentas) != 2:
-        logger.critical("⚠️ No se pudieron conectar las 2 cuentas")
-    return cuentas
+def conectar_ambas_cuentas():
+    # Conexión separada para CUENTA 1
+    iq1, saldo1 = conectar_cuenta(os.getenv("IQ_EMAIL_1"), os.getenv("IQ_PASSWORD_1"), "CUENTA_1")
+    time.sleep(2)  # Espera para evitar mezcla
+    # Conexión separada para CUENTA 2
+    iq2, saldo2 = conectar_cuenta(os.getenv("IQ_EMAIL_2"), os.getenv("IQ_PASSWORD_2"), "CUENTA_2")
+    time.sleep(2)
+
+    if not iq1 or not iq2:
+        logger.critical("❌ No se pudieron conectar las 2 cuentas")
+        return None, None
+    return iq1, iq2
 
 # --------------------------
-# OBTENER DATOS
+# OBTENER DATOS DE MERCADO
 # --------------------------
 def obtener_datos(iq, activo):
     try:
         if not iq.check_connect():
             iq.connect()
-            time.sleep(0.3)
+            time.sleep(0.2)
         velas = iq.get_candles(activo, TIEMPO_VELA, 50, time.time())
         if not velas or len(velas) < 30:
             return None
@@ -93,23 +90,27 @@ def obtener_datos(iq, activo):
         df[["open", "close", "high", "low"]] = df[["open", "close", "high", "low"]].astype(float)
         return df if not df.empty else None
     except Exception as e:
-        logger.error(f"⚠️ Error {activo}: {e}")
+        logger.error(f"⚠️ Error al obtener datos de {activo}: {e}")
         return None
 
 # --------------------------
-# EJECUTAR ORDEN SIN INTERFERENCIAS
+# FUNCIÓN PARA EJECUTAR ORDEN EN UNA CUENTA
 # --------------------------
-def ejecutar_orden(cuenta, activo, direccion, vela_id, resultado):
-    nombre = cuenta["nombre"]
-    iq = cuenta["conexion"]
+def ejecutar_orden_en_cuenta(iq, nombre_cuenta, activo, direccion, vela_id, resultado):
+    global ULTIMA_OPERACION_C1, ULTIMA_OPERACION_C2
 
-    with lock:
-        if ULTIMA_OPERACION[nombre] == vela_id:
-            resultado["ok"] = False
-            return
+    # Evitar repetir en la misma vela
+    if nombre_cuenta == "CUENTA_1" and ULTIMA_OPERACION_C1 == vela_id:
+        resultado["ok"] = False
+        return
+    if nombre_cuenta == "CUENTA_2" and ULTIMA_OPERACION_C2 == vela_id:
+        resultado["ok"] = False
+        return
+
+    logger.info(f"📤 Enviando orden DUPLICADA a {nombre_cuenta}: {activo} | {direccion} | ${MONTO_POR_OPERACION}")
 
     exito = False
-    id_op = None
+    id_operacion = None
     saldo_final = None
 
     for intento in range(REINTENTOS_MAX):
@@ -118,123 +119,137 @@ def ejecutar_orden(cuenta, activo, direccion, vela_id, resultado):
                 iq.connect()
                 time.sleep(0.2)
 
-            activos = iq.get_all_ACTIVES_OPCODE()
-            if activo not in activos:
+            activos_disponibles = iq.get_all_ACTIVES_OPCODE()
+            if activo not in activos_disponibles:
+                logger.warning(f"⚠️ {nombre_cuenta}: {activo} no disponible, reintentando...")
                 time.sleep(0.3)
                 continue
 
             estado, id_op = iq.buy(MONTO_POR_OPERACION, activo, direccion, EXPIRACION)
             if estado and id_op > 0:
-                time.sleep(0.5)
+                time.sleep(0.4)
                 saldo_final = round(iq.get_balance(), 2)
-                logger.info(f"✅ {nombre} | Ejecutado | ID: {id_op} | Saldo: ${saldo_final}")
+                logger.info(f"✅ {nombre_cuenta} | Ejecutada | ID: {id_op} | Saldo: ${saldo_final}")
                 exito = True
+                id_operacion = id_op
                 break
 
             time.sleep(ESPERA_REINTENTO)
+
         except Exception as e:
-            logger.warning(f"⚠️ {nombre} Intento {intento+1}: {e}")
+            logger.warning(f"⚠️ {nombre_cuenta} | Intento {intento+1}: {str(e)}")
             time.sleep(ESPERA_REINTENTO)
 
     if exito:
-        with lock:
-            ULTIMA_OPERACION[nombre] = vela_id
+        if nombre_cuenta == "CUENTA_1":
+            ULTIMA_OPERACION_C1 = vela_id
+        else:
+            ULTIMA_OPERACION_C2 = vela_id
         resultado["ok"] = True
-        resultado["id"] = id_op
+        resultado["id"] = id_operacion
         resultado["saldo"] = saldo_final
     else:
-        logger.error(f"❌ {nombre} | No se pudo ejecutar la orden")
+        logger.error(f"❌ {nombre_cuenta} | No se pudo ejecutar la orden")
         resultado["ok"] = False
 
 # --------------------------
 # BUCLE PRINCIPAL
 # --------------------------
 def iniciar_bot():
-    global ULTIMA_VELA_PROCESADA, ULTIMA_OPERACION
-    CUENTAS = conectar_cuentas()
-    if len(CUENTAS) != 2:
+    global ULTIMA_VELA_PROCESADA, ULTIMA_OPERACION_C1, ULTIMA_OPERACION_C2
+
+    # Conectar ambas cuentas al inicio
+    iq1, iq2 = conectar_ambas_cuentas()
+    if not iq1 or not iq2:
         return
 
     logger.info("="*70)
-    logger.info("🤖 BOT | 2 CUENTAS INDEPENDIENTES | MISMA ORDEN EN AMBAS")
-    logger.info(f"⚙️ Fuerza ≥ {FUERZA_MINIMA} | Entrada: {SEGUNDO_INICIO}-{SEGUNDO_FIN}s")
+    logger.info("🤖 BOT ACTIVO | MISMA ORDEN DUPLICADA PARA LAS 2 CUENTAS")
+    logger.info(f"⚙️ Fuerza mínima: {FUERZA_MINIMA} | Entrada: {SEGUNDO_INICIO}-{SEGUNDO_FIN}s")
     logger.info("="*70)
 
     senal_guardada = None
 
     while True:
         try:
-            iq_ref = CUENTAS[0]["conexion"]
-            tiempo_servidor = iq_ref.get_server_timestamp()
+            # Usamos la cuenta 1 para obtener la hora del servidor
+            tiempo_servidor = iq1.get_server_timestamp()
             segundos = int(tiempo_servidor % 60)
             vela_actual = int(tiempo_servidor // 60)
 
+            # Reiniciar control al cambiar de vela
             if vela_actual != ULTIMA_VELA_PROCESADA:
-                ULTIMA_OPERACION = {"CUENTA_1": None, "CUENTA_2": None}
                 ULTIMA_VELA_PROCESADA = vela_actual
+                ULTIMA_OPERACION_C1 = None
+                ULTIMA_OPERACION_C2 = None
                 senal_guardada = None
 
-            # Detectar señal
+            # PASO 1: Detectar la señal UNA SOLA VEZ
             if segundos == SEGUNDO_DETECCION:
                 mejor = None
                 mayor_fuerza = 0
                 logger.info("🔍 Buscando señales...")
                 for activo in ACTIVOS:
-                    df = obtener_datos(iq_ref, activo)
-                    if df is None:
+                    df = obtener_datos(iq1, activo)
+                    if df is None or df.empty:
                         continue
-                    res = get_reversal_signal(df)
-                    if res:
-                        dir_ori, fuerza, _ = res
+                    resultado_señal = get_reversal_signal(df)
+                    if resultado_señal:
+                        direccion_original, fuerza, _ = resultado_señal
                         if fuerza >= FUERZA_MINIMA and fuerza > mayor_fuerza:
                             mayor_fuerza = fuerza
-                            mejor = (activo, dir_ori, fuerza)
+                            mejor = (activo, direccion_original, fuerza)
+
                 if mejor:
-                    activo, dir_ori, fuerza = mejor
-                    dir_final = "put" if dir_ori == "call" else "call"
-                    senal_guardada = (activo, dir_final, fuerza)
-                    logger.info(f"✅ Señal lista: {activo} | {dir_final} | Fuerza: {fuerza}")
+                    activo, direccion_original, fuerza = mejor
+                    direccion_final = "put" if direccion_original == "call" else "call"
+                    senal_guardada = (activo, direccion_final, fuerza)
+                    logger.info(f"✅ Señal generada: {activo} | {direccion_final} | Fuerza: {fuerza}")
 
-            # Ejecutar en ambas al mismo tiempo
+            # PASO 2: DUPLICAR LA ORDEN Y ENVIAR A AMBAS CUENTAS
             if senal_guardada and SEGUNDO_INICIO <= segundos <= SEGUNDO_FIN:
-                activo, dir_final, fuerza = senal_guardada
-                logger.info(f"🚀 ENVIANDO A AMBAS: {activo} | {dir_final}")
+                activo, direccion_final, fuerza = senal_guardada
+                logger.info(f"🚀 ENVIANDO LA MISMA ORDEN DUPLICADA A LAS 2 CUENTAS")
 
-                res1 = {"ok": False, "id": None, "saldo": None}
-                res2 = {"ok": False, "id": None, "saldo": None}
+                # Variables para guardar el resultado de cada una
+                res_c1 = {"ok": False, "id": None, "saldo": None}
+                res_c2 = {"ok": False, "id": None, "saldo": None}
 
-                # Hilos separados para cada cuenta
-                t1 = Thread(target=ejecutar_orden, args=(CUENTAS[0], activo, dir_final, vela_actual, res1))
-                t2 = Thread(target=ejecutar_orden, args=(CUENTAS[1], activo, dir_final, vela_actual, res2))
+                # Ejecutar en hilos separados para ir al mismo tiempo
+                hilo1 = Thread(target=ejecutar_orden_en_cuenta, args=(iq1, "CUENTA_1", activo, direccion_final, vela_actual, res_c1))
+                hilo2 = Thread(target=ejecutar_orden_en_cuenta, args=(iq2, "CUENTA_2", activo, direccion_final, vela_actual, res_c2))
 
-                t1.start()
-                t2.start()
-                t1.join()
-                t2.join()
+                # Iniciar los dos al mismo tiempo
+                hilo1.start()
+                hilo2.start()
+
+                # Esperar a que terminen ambas
+                hilo1.join()
+                hilo2.join()
 
                 # Verificación final
-                if res1["ok"] and res2["ok"]:
+                if res_c1["ok"] and res_c2["ok"]:
                     logger.info("="*70)
-                    logger.info("✅✅ ÉXITO: AMBAS CUENTAS OPERARON CORRECTAMENTE")
-                    logger.info(f"💵 CUENTA 1: ${res1['saldo']} | CUENTA 2: ${res2['saldo']}")
+                    logger.info("✅✅ ÉXITO: LA MISMA ORDEN DUPLICADA SE EJECUTÓ EN AMBAS CUENTAS")
+                    logger.info(f"💵 CUENTA 1: ${res_c1['saldo']} | CUENTA 2: ${res_c2['saldo']}")
                     logger.info("="*70)
-                elif res1["ok"]:
-                    logger.warning("⚠️ Solo operó CUENTA 1 - revisando conexión de la 2")
-                    # Reconectar cuenta 2 si falló
-                    CUENTAS[1], _ = conectar_cuenta(os.getenv("IQ_EMAIL_2"), os.getenv("IQ_PASSWORD_2"), "CUENTA_2")
-                elif res2["ok"]:
-                    logger.warning("⚠️ Solo operó CUENTA 2 - revisando conexión de la 1")
-                    CUENTAS[0], _ = conectar_cuenta(os.getenv("IQ_EMAIL_1"), os.getenv("IQ_PASSWORD_1"), "CUENTA_1")
+                elif res_c1["ok"]:
+                    logger.warning("⚠️ Solo se ejecutó en CUENTA 1 - reconectando CUENTA 2")
+                    iq2, _ = conectar_cuenta(os.getenv("IQ_EMAIL_2"), os.getenv("IQ_PASSWORD_2"), "CUENTA_2")
+                elif res_c2["ok"]:
+                    logger.warning("⚠️ Solo se ejecutó en CUENTA 2 - reconectando CUENTA 1")
+                    iq1, _ = conectar_cuenta(os.getenv("IQ_EMAIL_1"), os.getenv("IQ_PASSWORD_1"), "CUENTA_1")
                 else:
-                    logger.error("❌ Ninguna cuenta operó")
+                    logger.error("❌ No se ejecutó en ninguna cuenta")
 
-                senal_guardada = None
+                senal_guardada = None  # Limpiar para siguiente vela
 
             time.sleep(0.05)
 
         except Exception as e:
-            logger.error(f"💥 Error: {str(e)}")
-            CUENTAS = conectar_cuentas()
+            logger.error(f"💥 Error en el bucle: {str(e)}")
+            # Si falla todo, reconectar las dos cuentas
+            iq1, iq2 = conectar_ambas_cuentas()
             time.sleep(3)
 
 if __name__ == "__main__":
