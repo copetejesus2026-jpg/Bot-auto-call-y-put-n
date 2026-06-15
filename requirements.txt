@@ -1,12 +1,6 @@
-# Librería IQ oficial
-git+https://github.com/iqoptionapi/iqoptionapi.git
-
-# Versiones estables, precompiladas y compatibles
-pandas==2.2.2
-numpy==1.26.4
+git+https://github.com/iqoptionapi/iqoptionapi.git@dev
+pandas==2.1.4
+numpy==1.24.4
 requests==2.31.0
-websocket-client==0.56.0
-python-dotenv==1.0.1
-
-# Forzar instalación de binarios sin compilar
---only-binary :all:
+websocket-client==1.6.4
+python-dotenv==1.0.0
