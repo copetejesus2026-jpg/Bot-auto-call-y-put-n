@@ -34,6 +34,34 @@ def bearish(c):
     return c["close"] < c["open"]
 
 # --------------------------
+# DETECCIÓN DE SOPORTE Y RESISTENCIA
+# --------------------------
+def hay_zona_fuerte(df, precio_actual, rango_busqueda=15, tolerancia=0.0008):
+    """
+    Busca si el precio actual está cerca de una zona donde el precio ya reaccionó antes
+    - rango_busqueda: últimas velas a revisar
+    - tolerancia: margen de error para considerar mismo nivel
+    """
+    if len(df) < rango_busqueda:
+        return False
+
+    # Tomamos los máximos y mínimos de las últimas velas
+    maximos = df["high"].iloc[-rango_busqueda:-1].values
+    minimos = df["low"].iloc[-rango_busqueda:-1].values
+
+    # Verificamos si el precio actual está cerca de algún máximo anterior (resistencia)
+    for nivel in maximos:
+        if abs(precio_actual - nivel) <= tolerancia:
+            return True
+
+    # Verificamos si el precio actual está cerca de algún mínimo anterior (soporte)
+    for nivel in minimos:
+        if abs(precio_actual - nivel) <= tolerancia:
+            return True
+
+    return False
+
+# --------------------------
 # DETECCIÓN DE VELA DE AGOTAMIENTO / INDECISIÓN
 # --------------------------
 def es_agotamiento(c):
@@ -86,7 +114,7 @@ def analizar_evolucion_vela(c):
 # --------------------------
 def get_reversal_signal(df):
     if df is None or df.empty or len(df) < 60:
-        return None  # Necesitamos más datos para confirmar tendencia
+        return None  # Necesitamos suficientes datos
 
     df = df.copy()
 
@@ -102,8 +130,12 @@ def get_reversal_signal(df):
     c3 = df.iloc[-3]
     c4 = df.iloc[-4]
 
-    # ❌ RECHAZO INMEDIATO SI ES AGOTAMIENTO
+    # ❌ RECHAZO 1: Vela de agotamiento
     if es_agotamiento(c1):
+        return None
+
+    # ❌ RECHAZO 2: Precio está en zona de soporte o resistencia fuerte
+    if hay_zona_fuerte(df, c1["close"]):
         return None
 
     fuerza = 0
@@ -147,8 +179,8 @@ def get_reversal_signal(df):
     # 🎯 Solo señales de MÁXIMA calidad
     if fuerza >= 88:
         if bullish(c1):
-            return ("call", fuerza, "ALCISTA | EVOLUCIÓN FUERTE")
+            return ("call", fuerza, "ALCISTA | FUERA DE ZONAS CLAVE")
         elif bearish(c1):
-            return ("put", fuerza, "BAJISTA | EVOLUCIÓN FUERTE")
+            return ("put", fuerza, "BAJISTA | FUERA DE ZONAS CLAVE")
 
     return None
