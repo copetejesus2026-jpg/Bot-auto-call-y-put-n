@@ -8,17 +8,16 @@ import sys
 # DEPENDENCIAS
 # --------------------------
 try:
-    # Usamos versión más estable y compatible
     from iqoptionapi.stable_api import IQ_Option
 except ImportError:
-    print("❌ Instala: pip install git+https://github.com/Lu-Yi-Hsun/iqoptionapi.git@v5.8.0")
+    print("❌ Ejecuta: pip install git+https://github.com/Lu-Yi-Hsun/iqoptionapi.git@v5.8.0")
     sys.exit(1)
 
 try:
     from telegram import Bot
     from telegram.error import TelegramError
 except ImportError:
-    print("❌ Instala: pip install python-telegram-bot==13.15")
+    print("❌ Ejecuta: pip install python-telegram-bot==13.15")
     sys.exit(1)
 
 from strategy import get_reversal_signal
@@ -33,7 +32,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Parámetros
 MONTO = 600
 EXPIRACION = 1
 VELA = 60
@@ -49,13 +47,11 @@ ACTIVOS = [
     "USDCHF-OTC", "AUDUSD-OTC", "GBPJPY-OTC"
 ]
 
-# Variables de entorno
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 IQ_EMAIL = os.getenv("IQ_EMAIL_1", "")
 IQ_PASSWORD = os.getenv("IQ_PASSWORD_1", "")
 
-# Variables globales
 IQ = None
 OPERACIONES = 0
 BOT_ACTIVO = True
@@ -64,7 +60,7 @@ YA_EJECUTADO = {}
 mejor_senal = None
 
 # --------------------------
-# NOTIFICACIONES TELEGRAM
+# TELEGRAM
 # --------------------------
 def enviar_telegram(texto):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
@@ -72,79 +68,75 @@ def enviar_telegram(texto):
     try:
         Bot(token=TELEGRAM_TOKEN).send_message(chat_id=int(TELEGRAM_CHAT_ID), text=texto, parse_mode="HTML")
     except Exception as e:
-        logger.error(f"Telegram error: {e}")
+        logger.error(f"Telegram: {e}")
 
 # --------------------------
-# CONEXIÓN SEGURA CON RECONSTRUCCIÓN TOTAL
+# CONEXIÓN FORZADA Y LIMPIA
 # --------------------------
-def conectar():
+def conectar_nuevo():
     global IQ
     if not IQ_EMAIL or not IQ_PASSWORD:
         logger.error("❌ Faltan credenciales")
         return None, 0.0
 
-    # Eliminamos sesión anterior por completo
+    # Eliminamos sesión anterior completamente
     try:
-        if IQ is not None:
+        if IQ:
             del IQ
             time.sleep(1)
     except:
         pass
 
     IQ = None
-    saldo = 0.0
-
     for intento in range(10):
         try:
-            logger.info(f"🔄 Conectando intento {intento+1}/10")
+            logger.info(f"🔄 Conexión intento {intento+1}")
             IQ = IQ_Option(IQ_EMAIL, IQ_PASSWORD)
-            check, reason = IQ.connect()
+            IQ.connect()
             time.sleep(2)
 
-            if check and IQ.check_connect():
+            if IQ.check_connect():
                 IQ.change_balance("PRACTICE")  # ⚠️ Cambia a "REAL" si usas dinero real
                 saldo = round(IQ.get_balance(), 2)
                 logger.info(f"✅ Conectado | Saldo: ${saldo}")
                 enviar_telegram(f"✅ BOT CONECTADO\n💵 Saldo: ${saldo}")
                 return IQ, saldo
             else:
-                logger.warning(f"Intento {intento+1} falló: {reason}")
+                logger.warning(f"Intento {intento+1} falló")
         except Exception as e:
-            logger.error(f"Error conexión: {str(e)}")
+            logger.error(f"Error conexión: {e}")
             IQ = None
         time.sleep(2)
 
-    logger.critical("❌ No se pudo conectar")
-    enviar_telegram("❌ ERROR: No se pudo conectar a IQ Option")
     return None, 0.0
 
-def verificar_conexion():
-    """Verifica y reinicia si es necesario"""
+def verificar_y_reconectar():
     global IQ
     try:
-        if IQ is None or not IQ.check_connect():
-            logger.warning("⚠️ Conexión perdida, reiniciando...")
-            IQ, _ = conectar()
+        if not IQ or not IQ.check_connect():
+            logger.warning("🔁 Reiniciando sesión completa")
+            IQ, _ = conectar_nuevo()
             time.sleep(1.5)
-            return IQ is not None and IQ.check_connect()
-        return True
+        return IQ and IQ.check_connect()
     except:
-        IQ, _ = conectar()
-        return IQ is not None and IQ.check_connect()
+        IQ, _ = conectar_nuevo()
+        return IQ and IQ.check_connect()
 
 # --------------------------
-# OBTENER VELAS SIN ERRORES
+# OBTENER VELAS SIN ERROR
 # --------------------------
 def obtener_velas(activo):
-    for intento in range(5):
-        if not verificar_conexion():
+    """Método reforzado para evitar error get_candles"""
+    for intento in range(6):
+        if not verificar_y_reconectar():
             time.sleep(1)
             continue
         try:
-            # Añadimos tiempo extra para evitar fallos
-            time.sleep(0.3)
+            # Espera extra para estabilizar la conexión
+            time.sleep(0.4)
             ts = int(time.time())
-            velas = IQ.get_candles(activo, VELA, 60, ts)
+            # Solicitamos menos velas para reducir carga
+            velas = IQ.get_candles(activo, VELA, 50, ts)
 
             if velas and len(velas) >= 40:
                 df = pd.DataFrame(velas)
@@ -155,8 +147,8 @@ def obtener_velas(activo):
             logger.info(f"⚠️ Datos insuficientes {activo}")
         except Exception as e:
             logger.warning(f"Error velas {activo}: {str(e)}")
-            verificar_conexion()
-        time.sleep(0.5)
+            verificar_y_reconectar()
+        time.sleep(0.6)
 
     return None
 
@@ -169,7 +161,7 @@ def ejecutar_orden(activo, direccion, vela_id):
         return False, None, 0.0
 
     for intento in range(REINTENTOS):
-        if not verificar_conexion():
+        if not verificar_y_reconectar():
             time.sleep(0.5)
             continue
         try:
@@ -188,7 +180,7 @@ def ejecutar_orden(activo, direccion, vela_id):
                 return True, id_op, saldo_final
         except Exception as e:
             logger.warning(f"Error orden: {str(e)}")
-            verificar_conexion()
+            verificar_y_reconectar()
         time.sleep(ESPERA_INTENTO)
 
     enviar_telegram(f"❌ No se pudo operar en {activo}")
@@ -204,7 +196,7 @@ def bucle_principal():
 
     while BOT_ACTIVO:
         try:
-            if not verificar_conexion():
+            if not verificar_y_reconectar():
                 time.sleep(2)
                 continue
 
@@ -245,7 +237,11 @@ def bucle_principal():
                 if mejor_senal:
                     activo, direccion, fuerza, tipo = mejor_senal
                     enviar_telegram(
-                        f"📊 SEÑAL\n📌 {activo}\n➡️ {direccion.upper()}\n💪 {fuerza}%\n🔍 {tipo}"
+                        f"📊 SEÑAL DETECTADA\n"
+                        f"📌 Activo: {activo}\n"
+                        f"➡️ Dirección: {direccion.upper()}\n"
+                        f"💪 Fuerza: {fuerza}%\n"
+                        f"🔍 Tipo: {tipo}"
                     )
                 else:
                     logger.info("ℹ️ Sin señales válidas")
@@ -256,7 +252,11 @@ def bucle_principal():
                 if ok:
                     OPERACIONES += 1
                     enviar_telegram(
-                        f"✅ OPERACIÓN\n📌 {activo} | {direccion.upper()}\n🆔 {id_op}\n💵 ${saldo}\n📊 {OPERACIONES}/{MAX_OPER}"
+                        f"✅ OPERACIÓN EJECUTADA\n"
+                        f"📌 {activo} | {direccion.upper()}\n"
+                        f"🆔 ID: {id_op}\n"
+                        f"💵 Saldo: ${saldo}\n"
+                        f"📊 Progreso: {OPERACIONES}/{MAX_OPER}"
                     )
                 mejor_senal = None
 
@@ -264,16 +264,16 @@ def bucle_principal():
 
         except Exception as e:
             logger.error(f"💥 Error en bucle: {str(e)}")
-            enviar_telegram(f"⚠️ {str(e)}")
-            verificar_conexion()
+            enviar_telegram(f"⚠️ Error: {str(e)}")
+            verificar_y_reconectar()
             time.sleep(3)
 
 # --------------------------
 # ARRANQUE
 # --------------------------
 if __name__ == "__main__":
-    IQ, _ = conectar()
+    IQ, _ = conectar_nuevo()
     if IQ:
         bucle_principal()
     else:
-        logger.critical("❌ No se pudo iniciar")
+        logger.critical("❌ No se pudo iniciar el bot")
