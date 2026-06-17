@@ -1,8 +1,7 @@
-git+https://github.com/Lu-Yi-Hsun/iqoptionapi.git@master
+git+https://github.com/Lu-Yi-Hsun/iqoptionapi.git@v5.8.0
+pandas==2.0.3
+numpy==1.24.3
 python-telegram-bot==13.15
-pandas==2.1.4
-numpy==1.26.4
+websocket-client==1.5.3
+websockets==11.0.3
 requests==2.31.0
-websockets==10.4
-setuptools>=65.5.1
-python-dotenv==1.0.0
