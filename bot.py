@@ -44,6 +44,7 @@ IQ_PASSWORD = os.getenv("IQ_PASSWORD_1", "")
 
 # Variables globales
 TOKEN = None
+USER_ID = None
 OPERACIONES = 0
 BOT_ACTIVO = True
 ULTIMA_VELA = None
@@ -60,25 +61,28 @@ def enviar_telegram(texto):
     except Exception as e: logger.error(f"Telegram: {e}")
 
 # --------------------------
-# LOGIN Y TOKEN — SOLO HTTP
+# LOGIN CON URL ACTUALIZADA
 # --------------------------
 def obtener_token():
-    global TOKEN
+    global TOKEN, USER_ID
     try:
+        # ✅ URL CORREGIDA (la anterior ya no existe)
         resp = requests.post(
-            "https://api.iqoption.com/v1/user/login",
+            "https://api.iqoption.com/v2/user/login",
             json={"email": IQ_EMAIL, "password": IQ_PASSWORD},
+            headers={"Content-Type": "application/json"},
             timeout=15
         )
         if resp.status_code == 200:
             datos = resp.json()
             TOKEN = datos.get("token")
+            USER_ID = datos.get("user_id")
             saldo = round(datos.get("balance", 0), 2)
-            logger.info(f"✅ CONECTADO — SIN WEBSOCKET | Saldo: ${saldo}")
+            logger.info(f"✅ CONECTADO | Saldo: ${saldo}")
             enviar_telegram(f"✅ BOT ACTIVO\n💵 Saldo: ${saldo}\n🎯 Solo reversión exacta")
             return True
-        logger.error(f"Login falló: {resp.text}")
-    except Exception as e: logger.error(f"Error login: {e}")
+        logger.error(f"Error login: Código {resp.status_code} | {resp.text[:100]}...")
+    except Exception as e: logger.error(f"Error conexión login: {str(e)}")
     return False
 
 def verificar_token():
@@ -86,20 +90,21 @@ def verificar_token():
     if not TOKEN: return obtener_token()
     try:
         resp = requests.get(
-            "https://api.iqoption.com/v1/user/profile",
+            "https://api.iqoption.com/v2/user/profile",
             headers={"Authorization": TOKEN},
             timeout=10
         )
         if resp.status_code == 200: return True
-        logger.warning("Token expirado — renovando")
+        logger.warning("Token expirado o inválido — renovando")
         return obtener_token()
-    except: return obtener_token()
+    except Exception as e:
+        logger.warning(f"Verificación token: {e}")
+        return obtener_token()
 
 # --------------------------
-# OBTENER VELAS — SIN get_candles
+# OBTENER VELAS — URL CORREGIDA
 # --------------------------
 def obtener_velas(activo, cantidad=50):
-    """100% API REST — NO EXISTE get_candles aquí"""
     if not verificar_token(): return None
     try:
         resp = requests.get(
@@ -118,7 +123,7 @@ def obtener_velas(activo, cantidad=50):
     return None
 
 # --------------------------
-# EJECUTAR OPERACIÓN — SIN LIBRERÍA
+# EJECUTAR OPERACIÓN — URL CORREGIDA
 # --------------------------
 def ejecutar_orden(activo, direccion, vela_id):
     clave = f"orden_{vela_id}"
@@ -129,7 +134,7 @@ def ejecutar_orden(activo, direccion, vela_id):
     for intento in range(REINTENTOS):
         try:
             resp = requests.post(
-                "https://api.iqoption.com/v1/trade/buy",
+                "https://api.iqoption.com/v2/trade/buy",
                 headers={"Authorization": TOKEN, "Content-Type": "application/json"},
                 json={
                     "instrument_id": activo,
@@ -148,7 +153,7 @@ def ejecutar_orden(activo, direccion, vela_id):
                     YA_EJECUTADO[clave] = True
                     logger.info(f"✅ ORDEN {tipo.upper()} | {activo} | ID:{id_op}")
                     return True, id_op, saldo_actual
-            logger.warning(f"Intento {intento+1} falló: {resp.text}")
+            logger.warning(f"Intento {intento+1} falló: {resp.text[:100]}...")
         except Exception as e: logger.warning(f"Orden: {e}")
         time.sleep(0.5)
     return False, None, 0.0
@@ -158,7 +163,7 @@ def ejecutar_orden(activo, direccion, vela_id):
 # --------------------------
 def tiempo_servidor():
     try:
-        resp = requests.get("https://api.iqoption.com/v1/time", timeout=8)
+        resp = requests.get("https://api.iqoption.com/v2/time", timeout=8)
         if resp.status_code == 200: return int(resp.json().get("timestamp", time.time()))
     except: pass
     return int(time.time())
@@ -168,7 +173,7 @@ def tiempo_servidor():
 # --------------------------
 def bucle_principal():
     global BOT_ACTIVO, ULTIMA_VELA, OPERACIONES, mejor_senal
-    logger.info("🚀 BOT: SIN ERROR — SOLO REVERSIÓN EXACTA")
+    logger.info("🚀 BOT: 100% API REST — SIN WEBSOCKET")
     while BOT_ACTIVO:
         try:
             if not verificar_token(): time.sleep(3); continue
@@ -178,11 +183,13 @@ def bucle_principal():
             vela_cerrada = vela_actual - 1
 
             if OPERACIONES >= MAX_OPER:
-                saldo_final = round(requests.get(
-                    "https://api.iqoption.com/v1/user/profile",
-                    headers={"Authorization": TOKEN}, timeout=8
-                ).json().get("balance",0), 2)
-                enviar_telegram(f"✅ FIN\n📊 Operaciones: {OPERACIONES}\n💵 Saldo: ${saldo_final}")
+                try:
+                    saldo_final = round(requests.get(
+                        "https://api.iqoption.com/v2/user/profile",
+                        headers={"Authorization": TOKEN}, timeout=8
+                    ).json().get("balance",0), 2)
+                    enviar_telegram(f"✅ FIN\n📊 Operaciones: {OPERACIONES}\n💵 Saldo: ${saldo_final}")
+                except: pass
                 BOT_ACTIVO = False; break
 
             if vela_cerrada != ULTIMA_VELA:
@@ -217,7 +224,11 @@ def bucle_principal():
         except Exception as e: logger.error(f"💥 {e}"); verificar_token(); time.sleep(3)
 
 if __name__ == "__main__":
+    # Verificar variables antes de iniciar
+    if not IQ_EMAIL or not IQ_PASSWORD:
+        logger.critical("❌ Faltan variables: IQ_EMAIL_1 o IQ_PASSWORD_1")
+        sys.exit(1)
     if obtener_token():
         bucle_principal()
     else:
-        logger.critical("❌ No se pudo iniciar — revisa correo/contraseña")
+        logger.critical("❌ No se pudo iniciar — revisa credenciales y conexión")
