@@ -20,7 +20,7 @@ except ImportError:
 from strategy import get_reversal_signal
 
 # --------------------------
-# CONFIGURACIÓN OPTIMIZADA PARA MAYOR WINRATE
+# CONFIGURACIÓN
 # --------------------------
 logging.basicConfig(
     level=logging.INFO,
@@ -29,23 +29,23 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Parámetros ajustados
+# Parámetros ajustados para que sí encuentre señales
 MONTO = 1200
 EXPIRACION = 1
 VELA = 60
-FUERZA_MIN = 85          # ⬆️ Más exigente para filtrar solo mejores señales
-SEG_INICIO = 1           # Entrada más precisa
-SEG_FIN = 7              # Ventana reducida para evitar desfases
+FUERZA_MIN = 80          # Bajamos un poco para que sí detecte
+SEG_INICIO = 0
+SEG_FIN = 9              # Ventana completa
 REINTENTOS = 8
 ESPERA_INTENTO = 0.03
 MAX_OPER = 20
 
 ACTIVOS = [
     "EURUSD-OTC", "GBPUSD-OTC", "EURJPY-OTC",
-    "USDCHF-OTC", "AUDCAD-OTC"
+    "USDCHF-OTC", "AUDUSD-OTC", "GBPJPY-OTC"
 ]
 
-# Variables de entorno (Railway)
+# Variables de entorno
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 IQ_EMAIL = os.getenv("IQ_EMAIL_1", "")
@@ -60,10 +60,11 @@ YA_EJECUTADO = {}
 mejor_senal = None
 
 # --------------------------
-# NOTIFICACIONES TELEGRAM
+# NOTIFICACIONES
 # --------------------------
 def enviar_telegram(texto):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        logger.warning("⚠️ Sin credenciales de Telegram")
         return
     try:
         Bot(token=TELEGRAM_TOKEN).send_message(chat_id=int(TELEGRAM_CHAT_ID), text=texto, parse_mode="HTML")
@@ -71,11 +72,11 @@ def enviar_telegram(texto):
         logger.error(f"Telegram error: {e}")
 
 # --------------------------
-# CONEXIÓN A LA CUENTA
+# CONEXIÓN
 # --------------------------
 def conectar_cuenta():
     if not IQ_EMAIL or not IQ_PASSWORD:
-        logger.error("❌ Faltan credenciales de acceso")
+        logger.error("❌ Faltan correo o contraseña de IQ Option")
         return None, 0.0
     for intento in range(10):
         try:
@@ -83,15 +84,15 @@ def conectar_cuenta():
             ok, motivo = iq.connect()
             if ok:
                 time.sleep(0.5)
-                iq.change_balance("PRACTICE")  # ⚠️ Cambia a "REAL" si usas dinero real
+                iq.change_balance("PRACTICE")  # Cambia a "REAL" si usas dinero real
                 saldo = round(iq.get_balance(), 2)
-                logger.info(f"✅ Cuenta conectada | Saldo: ${saldo}")
-                enviar_telegram(f"✅ BOT INICIADO\n💵 Saldo disponible: ${saldo}")
+                logger.info(f"✅ Conectado correctamente | Saldo: ${saldo}")
+                enviar_telegram(f"✅ BOT INICIADO\n💵 Saldo: ${saldo}\n⚙️ Fuerza mínima: {FUERZA_MIN}%")
                 return iq, saldo
             else:
                 logger.warning(f"Intento {intento+1} falló: {motivo}")
         except Exception as e:
-            logger.error(f"Error de conexión: {e}")
+            logger.error(f"Error conexión: {e}")
         time.sleep(1)
     return None, 0.0
 
@@ -106,8 +107,9 @@ def ejecutar_orden(activo, direccion, vela_id):
     for intento in range(REINTENTOS):
         try:
             if not IQ.check_connect():
+                logger.info("🔄 Reconectando para ejecutar...")
                 IQ.connect()
-                time.sleep(0.03)
+                time.sleep(0.05)
 
             saldo = round(IQ.get_balance(), 2)
             if saldo < MONTO:
@@ -121,29 +123,31 @@ def ejecutar_orden(activo, direccion, vela_id):
                 logger.info(f"✅ Orden ejecutada | {activo} | {direccion} | ID: {id_op}")
                 return True, id_op, saldo_final
 
+            logger.info(f"⏳ Reintento {intento+1}...")
             time.sleep(ESPERA_INTENTO)
         except Exception as e:
-            logger.warning(f"Intento {intento+1} error: {e}")
+            logger.warning(f"Error en orden: {e}")
             time.sleep(ESPERA_INTENTO)
 
-    enviar_telegram(f"❌ No se pudo ejecutar orden en {activo}")
+    enviar_telegram(f"❌ No se pudo ejecutar en {activo}")
     return False, None, 0.0
 
 # --------------------------
-# OBTENER DATOS DE VELAS
+# OBTENER VELAS
 # --------------------------
 def obtener_velas(activo):
     try:
         ts = int(time.time()) - 2
         velas = IQ.get_candles(activo, VELA, 50, ts)
-        if not velas or len(velas) < 50:
+        if not velas or len(velas) < 40:
+            logger.info(f"⚠️ Pocos datos para {activo}")
             return None
         df = pd.DataFrame(velas)
         df.rename(columns={"max": "high", "min": "low"}, inplace=True)
         df[["open", "close", "high", "low"]] = df[["open", "close", "high", "low"]].astype(float)
         return df
     except Exception as e:
-        logger.warning(f"Error obteniendo velas de {activo}: {e}")
+        logger.warning(f"Error obteniendo velas {activo}: {e}")
         return None
 
 # --------------------------
@@ -151,12 +155,12 @@ def obtener_velas(activo):
 # --------------------------
 def bucle_principal():
     global BOT_ACTIVO, ULTIMA_VELA, OPERACIONES, IQ, mejor_senal
-    logger.info("🚀 BOT ACTIVO - Configuración para mayor winrate")
+    logger.info("🚀 BOT INICIADO - Analizando activos...")
 
     while BOT_ACTIVO:
         try:
             if not IQ or not IQ.check_connect():
-                logger.warning("⚠️ Conexión perdida, reconectando...")
+                logger.warning("⚠️ Sin conexión, reconectando...")
                 IQ, _ = conectar_cuenta()
                 time.sleep(1)
                 continue
@@ -166,23 +170,19 @@ def bucle_principal():
             vela_actual = int(ts // 60)
             vela_cerrada = vela_actual - 1
 
-            # Detener al completar operaciones
             if OPERACIONES >= MAX_OPER:
                 saldo_final = round(IQ.get_balance(), 2)
-                enviar_telegram(
-                    f"✅ SESIÓN FINALIZADA\n"
-                    f"📊 Operaciones realizadas: {OPERACIONES}/{MAX_OPER}\n"
-                    f"💵 Saldo final: ${saldo_final}"
-                )
+                enviar_telegram(f"✅ SESIÓN FINALIZADA\n📊 Operaciones: {OPERACIONES}\n💵 Saldo final: ${saldo_final}")
                 BOT_ACTIVO = False
                 break
 
-            # Analizar nueva vela cerrada
+            # Analizar solo cuando cierra la vela
             if vela_cerrada != ULTIMA_VELA:
                 ULTIMA_VELA = vela_cerrada
                 YA_EJECUTADO.clear()
                 mejor_fuerza = 0
                 mejor_senal = None
+                logger.info(f"🔍 Analizando vela {vela_cerrada}...")
 
                 for activo in ACTIVOS:
                     df = obtener_velas(activo)
@@ -191,6 +191,7 @@ def bucle_principal():
                     senal = get_reversal_signal(df)
                     if senal:
                         dirr, fuerza, tipo = senal
+                        logger.info(f"📈 {activo} → {dirr.upper()} | Fuerza: {fuerza}%")
                         if fuerza >= FUERZA_MIN and fuerza > mejor_fuerza:
                             mejor_fuerza = fuerza
                             mejor_senal = (activo, dirr, fuerza, tipo)
@@ -204,16 +205,19 @@ def bucle_principal():
                         f"💪 Fuerza: {fuerza}%\n"
                         f"🔍 Tipo: {tipo}"
                     )
+                else:
+                    logger.info("ℹ️ No hay señales válidas en esta vela")
 
-            # Ejecutar operación dentro de la ventana de tiempo
+            # Ejecutar dentro de la ventana
             if mejor_senal and SEG_INICIO <= segundos <= SEG_FIN:
                 activo, direccion, fuerza, tipo = mejor_senal
+                logger.info(f"⚡ Ejecutando {activo} a los {segundos} seg")
                 ok, id_op, saldo = ejecutar_orden(activo, direccion, vela_actual)
 
                 if ok:
                     OPERACIONES += 1
                     enviar_telegram(
-                        f"✅ OPERACIÓN EJECUTADA\n"
+                        f"✅ OPERACIÓN REALIZADA\n"
                         f"📌 {activo} | {direccion.upper()}\n"
                         f"🆔 ID: {id_op}\n"
                         f"💵 Saldo: ${saldo}\n"
@@ -222,18 +226,20 @@ def bucle_principal():
 
                 mejor_senal = None
 
-            time.sleep(0.05)
+            time.sleep(0.1)
 
         except Exception as e:
-            logger.error(f"💥 Error en bucle principal: {e}")
+            logger.error(f"💥 Error en bucle: {e}")
             enviar_telegram(f"⚠️ Error: {str(e)}")
-            time.sleep(1)
+            time.sleep(2)
 
 # --------------------------
-# ARRANQUE DEL BOT
+# ARRANQUE
 # --------------------------
 if __name__ == "__main__":
     logger.info("🤖 INICIANDO BOT DE TRADING")
     IQ, _ = conectar_cuenta()
     if IQ:
         bucle_principal()
+    else:
+        logger.critical("❌ No se pudo conectar a la cuenta")
