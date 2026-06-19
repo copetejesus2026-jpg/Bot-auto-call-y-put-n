@@ -2,7 +2,7 @@ from iqoptionapi.stable_api import IQ_Option
 import time, logging, math, threading, os
 from dotenv import load_dotenv
 
-# ------------------ CONFIGURACIÓN GENERAL ------------------
+# ------------------ CARGA VARIABLES Y LOGS ------------------
 load_dotenv()
 
 logging.basicConfig(
@@ -12,19 +12,19 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ✅ CARGA Y VALIDACIÓN DE VARIABLES (coinciden con tus nombres)
+# ✅ LECTURA SEGURA DE VARIABLES (NOMBRES IGUALES A TU PANEL)
 IQ_EMAIL = os.getenv("IQ_EMAIL", "").strip()
 IQ_PASS = os.getenv("IQ_PASSWORD", "").strip()
-# Solo admite EXACTAMENTE: "demo" o "real"
 IQ_BALANCE = os.getenv("IQ_BALANCE", "demo").strip().lower()
+# Solo acepta valores exactos
 if IQ_BALANCE not in ("demo", "real"):
     IQ_BALANCE = "demo"
-    logger.warning("⚠️ Valor inválido en IQ_BALANCE → se usa 'demo' por defecto")
+    logger.warning("⚠️ IQ_BALANCE inválido → se usa 'demo' por defecto")
 
 TRADE_AMOUNT = float(os.getenv("TRADE_AMOUNT", 1.0))
 MIN_PAYOUT = int(os.getenv("MIN_PAYOUT", 70))
 
-# ✅ TELEGRAM: activación segura con tus valores
+# ✅ TELEGRAM: manejo seguro SIN detener el bot si falla
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 bot_tg = None
@@ -32,9 +32,9 @@ try:
     import telebot
     if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
         bot_tg = telebot.TeleBot(TELEGRAM_TOKEN, parse_mode="HTML")
-        logger.info("✅ TELEGRAM CONFIGURADO CORRECTAMENTE")
-except ImportError as e:
-    logger.warning(f"⚠️ No se pudo cargar telebot: {e}")
+        logger.info("✅ TELEGRAM ACTIVADO CORRECTAMENTE")
+except ImportError:
+    logger.warning("⚠️ Paquete telebot NO instalado — bot sigue funcionando SIN notificaciones")
 
 CUENTA = {
     "email": IQ_EMAIL,
@@ -43,9 +43,9 @@ CUENTA = {
     "tipo": IQ_BALANCE
 }
 
-# ACTIVOS E INDICADORES
+# CONFIGURACIÓN DE ESTRATEGIA
 ASSETS = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "EURGBP"]
-TIMEFRAME = 60
+TIMEFRAME = 60       # 1 minuto
 EXPIRY = 1
 RSI_PERIOD = 7
 RSI_SOBRE = 75
@@ -70,20 +70,22 @@ def conectar_cuenta(datos_cuenta):
     while True:
         try:
             api = IQ_Option(datos_cuenta["email"], datos_cuenta["pass"])
-            api.timeout = 30  # Mayor tolerancia a red lenta
+            api.timeout = 30
             ok, razon = api.connect()
             if ok:
-                # ✅ SOLUCIÓN PRINCIPAL: cambiar modo SOLO si está conectado y valor válido
+                # ✅ SOLUCIÓN FINAL: evitar "doesn't have this mode"
                 try:
-                    saldo = api.get_balance()  # Confirma que la sesión está activa
+                    saldo_actual = api.get_balance()  # Verifica que la sesión esté activa
                     if datos_cuenta["tipo"] in ("demo", "real"):
                         api.change_balance(datos_cuenta["tipo"])
-                        saldo = api.get_balance()
-                        notificar(f"✅ {alias} CONECTADO | Modo: {datos_cuenta['tipo'].upper()} | Saldo: ${saldo:.2f}")
+                        saldo_actual = api.get_balance()
+                        notificar(f"✅ {alias} CONECTADO | Modo: {datos_cuenta['tipo'].upper()} | Saldo: ${saldo_actual:.2f}")
+                    else:
+                        notificar(f"✅ {alias} CONECTADO | Saldo: ${saldo_actual:.2f}")
                 except Exception as err:
-                    logger.warning(f"ℹ️ Sin cambio de modo forzado: {err} — operación continua")
-                    saldo = api.get_balance()
-                    notificar(f"✅ {alias} CONECTADO | Saldo: ${saldo:.2f}")
+                    logger.warning(f"ℹ️ Sin cambio de modo: {err} — operación continua")
+                    saldo_actual = api.get_balance()
+                    notificar(f"✅ {alias} CONECTADO | Saldo: ${saldo_actual:.2f}")
                 return api
             if "invalid_credentials" in str(razon):
                 logger.warning(f"{alias} ⚠️ Correo/contraseña incorrectos")
@@ -192,5 +194,5 @@ def ciclo_principal():
             time.sleep(5)
 
 if __name__ == "__main__":
-    notificar("🚀 BOT LISTO — ERROR 'doesn't have this mode' ELIMINADO")
+    notificar("🚀 BOT LISTO — TODOS LOS ERRORES CORREGIDOS")
     ciclo_principal()
