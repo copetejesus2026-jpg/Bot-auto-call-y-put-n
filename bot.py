@@ -1,5 +1,5 @@
 from iqoptionapi.stable_api import IQ_Option
-import time, logging, math, telebot, threading
+import time, logging, math, threading
 
 # ------------------ CONFIGURACIÓN ------------------
 logging.basicConfig(
@@ -11,8 +11,8 @@ logger = logging.getLogger(__name__)
 
 # CUENTAS (2 independientes)
 ACCOUNTS = [
-    {"email": "cuenta1@correo.com", "pass": "clave1", "alias": "CUENTA-1", "tipo": "demo"},
-    {"email": "cuenta2@correo.com", "pass": "clave2", "alias": "CUENTA-2", "tipo": "demo"}
+    {"email": "tu_correo1@dominio.com", "pass": "tu_clave1", "alias": "CUENTA-1", "tipo": "demo"},
+    {"email": "tu_correo2@dominio.com", "pass": "tu_clave2", "alias": "CUENTA-2", "tipo": "demo"}
 ]
 ASSETS = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "EURGBP"]
 TIMEFRAME = 60       # 1 minuto
@@ -32,12 +32,18 @@ MIN_RANGO = 0.001
 # TELEGRAM (deja vacío si no usas)
 TELEGRAM_TOKEN = ""
 TELEGRAM_CHAT_ID = ""
-bot_tg = telebot.TeleBot(TELEGRAM_TOKEN, parse_mode="HTML") if TELEGRAM_TOKEN else None
+bot_tg = None
+try:
+    import telebot
+    if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
+        bot_tg = telebot.TeleBot(TELEGRAM_TOKEN, parse_mode="HTML")
+except ImportError:
+    logger.warning("⚠️ Módulo telebot no disponible — sin notificaciones Telegram")
 # -----------------------------------------------------
 
 def notificar(texto):
     logger.info(texto)
-    if bot_tg and TELEGRAM_TOKEN:
+    if bot_tg:
         try: bot_tg.send_message(TELEGRAM_CHAT_ID, texto[:4000])
         except Exception as e: logger.warning(f"Telegram: {e}")
 
@@ -98,6 +104,8 @@ def es_agotamiento(vela):
 
 def obtener_velas_seguro(api, activo, cantidad=30):
     try:
+        if not api.check_connect():
+            return None
         return api.get_candles(activo, TIMEFRAME, cantidad, time.time())
     except Exception as e:
         logger.error(f"get_candles falló: {e}")
