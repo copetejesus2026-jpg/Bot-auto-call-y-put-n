@@ -9,27 +9,30 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# CUENTAS (2 independientes)
-ACCOUNTS = [
-    {"email": "tu_correo1@dominio.com", "pass": "tu_clave1", "alias": "CUENTA-1", "tipo": "demo"},
-    {"email": "tu_correo2@dominio.com", "pass": "tu_clave2", "alias": "CUENTA-2", "tipo": "demo"}
-]
+# ✅ SOLO 1 CUENTA
+CUENTA = {
+    "email": "tu_correo@dominio.com",   # ← CAMBIA ESTO
+    "pass": "tu_contraseña",            # ← CAMBIA ESTO
+    "alias": "CUENTA-PRINCIPAL",
+    "tipo": "demo"                      # usa "real" para cuenta real
+}
+
 ASSETS = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "EURGBP"]
 TIMEFRAME = 60       # 1 minuto
-EXPIRY = 1           # vencimiento en minutos
+EXPIRY = 1           # vencimiento 1 min
 MONTO = 1.0          # monto por operación
-PAGO_MIN = 70        # % mínimo aceptable
+PAGO_MIN = 70        # % mínimo de pago aceptado
 
-# INDICADORES + FILTRO AGOTAMIENTO
+# INDICADORES + FILTRO VELAS AGOTAMIENTO
 RSI_PERIOD = 7
 RSI_SOBRE = 75
 RSI_SOBREV = 25
 ADX_PERIOD = 14
-ADX_FUERTE = 30      # <30 = rango/favorable
+ADX_FUERTE = 30
 MAX_VELA_RANGO = 0.012
 MIN_RANGO = 0.001
 
-# TELEGRAM (deja vacío si no usas)
+# TELEGRAM (opcional)
 TELEGRAM_TOKEN = ""
 TELEGRAM_CHAT_ID = ""
 bot_tg = None
@@ -38,7 +41,7 @@ try:
     if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
         bot_tg = telebot.TeleBot(TELEGRAM_TOKEN, parse_mode="HTML")
 except ImportError:
-    logger.warning("⚠️ Módulo telebot no disponible — sin notificaciones Telegram")
+    logger.warning("⚠️ Sin notificaciones Telegram (módulo no instalado o vacío)")
 # -----------------------------------------------------
 
 def notificar(texto):
@@ -104,11 +107,10 @@ def es_agotamiento(vela):
 
 def obtener_velas_seguro(api, activo, cantidad=30):
     try:
-        if not api.check_connect():
-            return None
+        if not api.check_connect(): return None
         return api.get_candles(activo, TIMEFRAME, cantidad, time.time())
     except Exception as e:
-        logger.error(f"get_candles falló: {e}")
+        logger.error(f"Error velas {activo}: {e}")
         return None
 
 def obtener_señal(api, activo):
@@ -126,43 +128,39 @@ def obtener_señal(api, activo):
         return "put"
     return None
 
-def ciclo_cuenta(datos_cuenta):
-    alias = datos_cuenta["alias"]
-    api = conectar_cuenta(datos_cuenta)
+def ciclo_principal():
+    alias = CUENTA["alias"]
+    api = conectar_cuenta(CUENTA)
     while True:
         try:
             if not api.check_connect():
                 notificar(f"⚠️ {alias} DESCONECTADO — reconectando...")
-                api = conectar_cuenta(datos_cuenta)
+                api = conectar_cuenta(CUENTA)
                 continue
             for activo in ASSETS:
                 try:
-                    abierto = api.get_all_open_time()["turbo"].get(activo, {}).get("open", False)
+                    estado = api.get_all_open_time()["turbo"].get(activo, {})
+                    if not estado.get("open", False): continue
                     pago = api.get_payout(activo, "turbo")
-                    if not abierto or pago < PAGO_MIN: continue
+                    if pago < PAGO_MIN: continue
                     direccion = obtener_señal(api, activo)
                     if direccion:
                         ok_op, id_op = api.buy(MONTO, activo, direccion, EXPIRY)
                         if ok_op:
                             notificar(f"📈 {alias} | {activo} | {direccion.upper()} | Pago: {pago}%")
                             res = api.check_win_v4(id_op, 10)
-                            if res[1]>0: notificar(f"🟢 {alias} +${res[1]:.2f}")
-                            elif res[1]<0: notificar(f"🔴 {alias} -${abs(res[1]):.2f}")
+                            if res[1]>0: notificar(f"🟢 GANANCIA: +${res[1]:.2f}")
+                            elif res[1]<0: notificar(f"🔴 PÉRDIDA: -${abs(res[1]):.2f}")
                     time.sleep(1.2)
                 except Exception as e:
                     logger.error(f"{alias} {activo}: {e}")
                     time.sleep(3)
             time.sleep(8)
         except Exception as e:
-            logger.error(f"{alias} Error ciclo: {e} → reinicio conexión")
-            api = conectar_cuenta(datos_cuenta)
+            logger.error(f"{alias} Error ciclo: {e} → reinicio")
+            api = conectar_cuenta(CUENTA)
             time.sleep(5)
 
 if __name__ == "__main__":
-    notificar("🚀 BOT LISTO: RECONEXIÓN + 2 CUENTAS + FILTRO AGOTAMIENTO")
-    hilos = []
-    for cta in ACCOUNTS:
-        t = threading.Thread(target=ciclo_cuenta, args=(cta,), daemon=True)
-        hilos.append(t)
-        t.start()
-    for t in hilos: t.join()
+    notificar("🚀 BOT INICIADO — 1 CUENTA | RECONEXIÓN | FILTRO AGOTAMIENTO")
+    ciclo_principal()
