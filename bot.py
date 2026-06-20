@@ -1,190 +1,196 @@
 from iqoptionapi.stable_api import IQ_Option
-import time, logging, math, threading, os
+import time
+import pandas as pd
+import numpy as np
+import os
+import logging
 from dotenv import load_dotenv
+import telegram
 
-# ------------------ CONFIGURACIÓN GENERAL ------------------
+# ---------------------- CONFIGURACIÓN INICIAL ----------------------
 load_dotenv()
 
+# Logs para seguimiento
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s",
-    handlers=[logging.FileHandler("bot_logs.log"), logging.StreamHandler()]
+    filename="bot_logs.log",
+    filemode="a"
 )
-logger = logging.getLogger(__name__)
+console = logging.StreamHandler()
+console.setLevel(logging.INFO)
+formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
+console.setFormatter(formatter)
+logging.getLogger("").addHandler(console)
 
-# ✅ LECTURA SEGURA DE VARIABLES (EXACTAS A TU PANEL)
-IQ_EMAIL = os.getenv("IQ_EMAIL", "").strip()
-IQ_PASS = os.getenv("IQ_PASSWORD", "").strip()
-# Solo admite valores EXACTOS: "demo" o "real"
-IQ_BALANCE = os.getenv("IQ_BALANCE", "demo").strip().lower()
-if IQ_BALANCE not in ("demo", "real"):
-    IQ_BALANCE = "demo"
-    logger.warning("⚠️ IQ_BALANCE inválido → se usa 'demo' por defecto")
+# Cuentas (hasta 2 como pediste)
+CUENTAS = [
+    {"email": os.getenv("EMAIL1"), "pass": os.getenv("PASS1")},
+    {"email": os.getenv("EMAIL2"), "pass": os.getenv("PASS2")}
+]
+ACTIVO = "EURGBP-OTC"      # Coincide con tus gráficos
+TIEMPO_VELA = 60           # 1 minuto
+TIEMPO_OPERACION = 2       # 2 minutos de vencimiento
+MAX_VELAS_ESPERA = 5       # Límite que definiste
+FILTRO_AGOTAMIENTO = 0.4   # Cuerpo ≥ 40% del rango total
 
-TRADE_AMOUNT = float(os.getenv("TRADE_AMOUNT", 1.0))
-MIN_PAYOUT = int(os.getenv("MIN_PAYOUT", 70))
+# Telegram
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+bot_tg = telegram.Bot(token=TELEGRAM_TOKEN) if TELEGRAM_TOKEN else None
+# -------------------------------------------------------------------
 
-# ✅ TELEGRAM: importación segura sin cortar ejecución
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
-bot_tg = None
-try:
-    import telebot
-    if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
-        bot_tg = telebot.TeleBot(TELEGRAM_TOKEN, parse_mode="HTML")
-        logger.info("✅ TELEGRAM ACTIVADO")
-except Exception as e:
-    logger.info(f"ℹ️ Sin notificaciones Telegram: {e} — bot funciona igual")
-
-CUENTA = {
-    "email": IQ_EMAIL,
-    "pass": IQ_PASS,
-    "alias": "CUENTA-PRINCIPAL",
-    "tipo": IQ_BALANCE
-}
-
-# ESTRATEGIA
-ASSETS = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "EURGBP"]
-TIMEFRAME = 60
-EXPIRY = 1
-RSI_PERIOD = 7
-RSI_SOBRE = 75
-RSI_SOBREV = 25
-ADX_PERIOD = 14
-ADX_FUERTE = 30
-MAX_VELA_RANGO = 0.012
-MIN_RANGO = 0.001
-
-def notificar(texto):
-    logger.info(texto)
+def enviar_mensaje(texto):
     if bot_tg:
-        try: bot_tg.send_message(TELEGRAM_CHAT_ID, texto[:4000])
-        except Exception as e: logger.warning(f"Telegram: {e}")
-
-def conectar_cuenta(datos_cuenta):
-    alias = datos_cuenta["alias"]
-    if not datos_cuenta["email"] or not datos_cuenta["pass"]:
-        logger.error("❌ FALTAN VARIABLES: IQ_EMAIL o IQ_PASSWORD")
-        time.sleep(10)
-        return None
-    while True:
         try:
-            api = IQ_Option(datos_cuenta["email"], datos_cuenta["pass"])
-            api.timeout = 30
-            ok, razon = api.connect()
-            if ok:
-                # ✅ SOLUCIÓN FINAL: NUNCA MÁS ERROR "doesn't have this mode"
-                # En versiones recientes, el saldo se elige al iniciar; no forzamos cambio
-                saldo = api.get_balance()
-                saldo_tipo = "DEMO" if "demo" in str(saldo).lower() else "REAL"
-                notificar(f"✅ {alias} CONECTADO | Cuenta: {saldo_tipo} | Saldo: ${saldo:.2f}")
-                return api
-            if "invalid_credentials" in str(razon):
-                logger.warning(f"{alias} ⚠️ Correo/contraseña incorrectos")
-            elif "timed out" in str(razon).lower():
-                logger.warning(f"{alias} ⏱️ Tiempo agotado por red")
-            else:
-                logger.warning(f"{alias} {razon}")
-            time.sleep(10)
+            bot_tg.send_message(chat_id=TELEGRAM_CHAT_ID, text=texto, parse_mode="Markdown")
         except Exception as e:
-            logger.error(f"{alias} Error conexión: {e}")
-            time.sleep(10)
+            logging.warning(f"Telegram error: {e}")
 
-def calcular_rsi(precios, periodo):
-    gan, per = [], []
-    for i in range(1, len(precios)):
-        dif = precios[i] - precios[i-1]
-        gan.append(dif if dif>0 else 0)
-        per.append(-dif if dif<0 else 0)
-    if len(gan) < periodo: return 50
-    media_gan = sum(gan[-periodo:])/periodo
-    media_per = sum(per[-periodo:])/periodo
-    if media_per == 0: return 100
-    rs = media_gan / media_per
-    return 100 - (100/(1+rs))
-
-def calcular_adx(velas, periodo):
-    plus_dm, minus_dm, tr = [], [], []
-    for i in range(1, len(velas)):
-        hh = velas[i]["max"] - velas[i-1]["max"]
-        ll = velas[i-1]["min"] - velas[i]["min"]
-        plus_dm.append(hh if hh>ll and hh>0 else 0)
-        minus_dm.append(ll if ll>hh and ll>0 else 0)
-        tr.append(max(velas[i]["max"]-velas[i]["min"],
-                      abs(velas[i]["max"]-velas[i-1]["close"]),
-                      abs(velas[i]["min"]-velas[i-1]["close"])))
-    if len(tr) < periodo: return 50
-    tr_suav = sum(tr[-periodo:])/periodo
-    plus_suav = sum(plus_dm[-periodo:])/periodo
-    minus_suav = sum(minus_dm[-periodo:])/periodo
-    if tr_suav == 0: return 0
-    plus_di = 100*(plus_suav/tr_suav)
-    minus_di = 100*(minus_suav/tr_suav)
-    if plus_di+minus_di == 0: return 0
-    dx = 100*abs(plus_di-minus_di)/(plus_di+minus_di)
-    return dx
-
-def es_agotamiento(vela):
-    rango = (vela["max"] - vela["min"])/vela["close"]
-    cuerpo = abs(vela["close"] - vela["open"])/vela["close"]
-    return rango > MAX_VELA_RANGO or rango < MIN_RANGO or cuerpo/rango < 0.15
-
-def obtener_velas_seguro(api, activo, cantidad=30):
+def obtener_velas(api, cantidad=40):
+    """Obtiene y estructura velas + filtra agotamiento"""
     try:
-        if not api or not api.check_connect(): return None
-        return api.get_candles(activo, TIMEFRAME, cantidad, time.time())
+        velas = api.get_candles(ACTIVO, TIEMPO_VELA, cantidad, time.time())
+        df = pd.DataFrame(velas)[["open", "high", "low", "close", "time"]].copy()
+        df["color"] = np.where(df["close"] > df["open"], "VERDE", "ROJA")
+        df["cuerpo"] = abs(df["close"] - df["open"])
+        df["rango_total"] = df["high"] - df["low"]
+        df["valida"] = np.where(
+            df["rango_total"] == 0, False,
+            (df["cuerpo"] / df["rango_total"]) >= FILTRO_AGOTAMIENTO
+        )
+        return df
     except Exception as e:
-        logger.error(f"{activo}: {e}")
-        return None
+        logging.error(f"Error al obtener velas: {e}")
+        return pd.DataFrame()
 
-def obtener_señal(api, activo):
-    velas = obtener_velas_seguro(api, activo)
-    if not velas or len(velas)<20: return None
-    if any(es_agotamiento(v) for v in velas[-3:]): return None
-    precios_cierre = [v["close"] for v in velas]
-    rsi = calcular_rsi(precios_cierre, RSI_PERIOD)
-    adx = calcular_adx(velas, ADX_PERIOD)
-    ult = velas[-1]; ant = velas[-2]
-    if adx > ADX_FUERTE: return None
-    if rsi < RSI_SOBREV and ult["close"] > ult["open"] and ant["close"] < ant["open"]:
-        return "call"
-    if rsi > RSI_SOBRE and ult["close"] < ult["open"] and ant["close"] > ant["open"]:
-        return "put"
+# ---------------- DETECCIÓN ESTRUCTURA COMO EN IMÁGENES ----------------
+def tendencia_alcista(df, n=3):
+    """3 máximos y mínimos crecientes + velas válidas"""
+    if len(df) < n: return False
+    u = df.tail(n)
+    return all(u["valida"]) and all(u["high"] > u["high"].shift(1).dropna()) and all(u["low"] > u["low"].shift(1).dropna())
+
+def tendencia_bajista(df, n=3):
+    """3 máximos y mínimos decrecientes + velas válidas"""
+    if len(df) < n: return False
+    u = df.tail(n)
+    return all(u["valida"]) and all(u["high"] < u["high"].shift(1).dropna()) and all(u["low"] < u["low"].shift(1).dropna())
+
+def patron_venta_imagen(df):
+    """
+    Igual que en tus gráficos:
+    ↑ → ROJA → VERDE → ROJA (cierra < apertura VERDE)
+    Resistencia = Máximo de la vela VERDE intermedia
+    Nivel entrada = Mínimo de la 3ª vela
+    """
+    if len(df) < 10: return None
+    df = df.reset_index(drop=True)
+    i = len(df) - 4
+    if not tendencia_alcista(df.iloc[:i+1]): return None
+
+    v1, v2, v3 = df.iloc[i], df.iloc[i+1], df.iloc[i+2]
+    if v1["color"] == "ROJA" and v2["color"] == "VERDE" and v3["color"] == "ROJA":
+        if v3["close"] < v2["open"]:
+            return {
+                "indice_inicio": i + 3,
+                "resistencia": round(v2["high"], 5),
+                "nivel_entrada": round(v3["low"], 5)
+            }
     return None
 
-def ciclo_principal():
-    alias = CUENTA["alias"]
-    api = conectar_cuenta(CUENTA)
-    while True:
-        try:
-            if not api or not api.check_connect():
-                notificar(f"⚠️ {alias} RECONECTANDO...")
-                api = conectar_cuenta(CUENTA)
-                continue
-            for activo in ASSETS:
-                try:
-                    estado = api.get_all_open_time()["turbo"].get(activo, {})
-                    if not estado.get("open", False): continue
-                    pago = api.get_payout(activo, "turbo")
-                    if pago < MIN_PAYOUT: continue
-                    direccion = obtener_señal(api, activo)
-                    if direccion:
-                        ok_op, id_op = api.buy(TRADE_AMOUNT, activo, direccion, EXPIRY)
-                        if ok_op:
-                            notificar(f"📈 {alias} | {activo} | {direccion.upper()} | Pago: {pago}%")
-                            res = api.check_win_v4(id_op, 10)
-                            if res[1]>0: notificar(f"🟢 +${res[1]:.2f}")
-                            elif res[1]<0: notificar(f"🔴 -${abs(res[1]):.2f}")
-                    time.sleep(1.2)
-                except Exception as e:
-                    logger.error(f"{activo}: {e}")
-                    time.sleep(3)
-            time.sleep(8)
-        except Exception as e:
-            logger.error(f"Reinicio ciclo: {e}")
-            api = conectar_cuenta(CUENTA)
-            time.sleep(5)
+def patron_compra_imagen(df):
+    """
+    Espejo bajista:
+    ↓ → VERDE → ROJA → VERDE (cierra > apertura ROJA)
+    Soporte = Mínimo de la vela ROJA intermedia
+    Nivel entrada = Máximo de la 3ª vela
+    """
+    if len(df) < 10: return None
+    df = df.reset_index(drop=True)
+    i = len(df) - 4
+    if not tendencia_bajista(df.iloc[:i+1]): return None
 
+    v1, v2, v3 = df.iloc[i], df.iloc[i+1], df.iloc[i+2]
+    if v1["color"] == "VERDE" and v2["color"] == "ROJA" and v3["color"] == "VERDE":
+        if v3["close"] > v2["open"]:
+            return {
+                "indice_inicio": i + 3,
+                "soporte": round(v2["low"], 5),
+                "nivel_entrada": round(v3["high"], 5)
+            }
+    return None
+
+def verificar_rompimiento(df, patron, tipo):
+    """Revisa dentro de las 5 velas permitidas"""
+    idx = patron["indice_inicio"]
+    for paso in range(MAX_VELAS_ESPERA):
+        pos = idx + paso
+        if pos >= len(df): break
+        v = df.iloc[pos]
+        if not v["valida"]: continue
+
+        if tipo == "venta" and v["close"] < patron["nivel_entrada"]:
+            return True, f"✅ VENTA | Resistencia: {patron['resistencia']} | Entrada: {patron['nivel_entrada']} | Vela: {paso+1}/5"
+        if tipo == "compra" and v["close"] > patron["nivel_entrada"]:
+            return True, f"✅ COMPRA | Soporte: {patron['soporte']} | Entrada: {patron['nivel_entrada']} | Vela: {paso+1}/5"
+    return False, "❌ Sin rompimiento válido en 5 velas"
+
+def operar(api, direccion, cuenta_num):
+    estado, id_op = api.buy(1, ACTIVO, direccion, TIEMPO_OPERACION)
+    saldo = round(api.get_balance(), 2)
+    if estado:
+        msg = f"💸 Cuenta {cuenta_num} | {direccion.upper()} | ID: {id_op} | Saldo: ${saldo}"
+        logging.info(msg)
+        enviar_mensaje(msg)
+    else:
+        msg = f"⚠️ Cuenta {cuenta_num} | Falló operación {direccion}"
+        logging.warning(msg)
+        enviar_mensaje(msg)
+
+# ---------------- EJECUCIÓN PRINCIPAL ----------------
 if __name__ == "__main__":
-    notificar("🚀 BOT LISTO — ERROR 'doesn't have this mode' ELIMINADO PARA SIEMPRE")
-    ciclo_principal()
+    conexiones = []
+    for n, dat in enumerate(CUENTAS, start=1):
+        if not dat["email"] or not dat["pass"]:
+            logging.warning(f"Cuenta {n} sin datos → omitida")
+            continue
+        con = IQ_Option(dat["email"], dat["pass"])
+        ok, razon = con.connect()
+        if ok:
+            logging.info(f"Cuenta {n} conectada | Saldo: ${con.get_balance():.2f}")
+            conexiones.append((n, con))
+        else:
+            logging.error(f"Cuenta {n} error: {razon}")
+
+    if not conexiones:
+        logging.critical("Sin cuentas conectadas")
+        exit()
+
+    enviar_mensaje("🤖 Bot iniciado — Estrategia según estructura de imágenes")
+
+    try:
+        while True:
+            for num, api in conexiones:
+                df = obtener_velas(api)
+                if df.empty: continue
+
+                # VENTA
+                p_venta = patron_venta_imagen(df)
+                if p_venta:
+                    ok, info = verificar_rompimiento(df, p_venta, "venta")
+                    logging.info(f"Cuenta {num}: {info}")
+                    if ok: operar(api, "put", num)
+
+                # COMPRA
+                p_compra = patron_compra_imagen(df)
+                if p_compra:
+                    ok, info = verificar_rompimiento(df, p_compra, "compra")
+                    logging.info(f"Cuenta {num}: {info}")
+                    if ok: operar(api, "call", num)
+
+            time.sleep(10)  # Revisión ligera
+    except KeyboardInterrupt:
+        enviar_mensaje("⏹ Bot detenido manualmente")
+        logging.info("Detenido por usuario")
+        for _, api in conexiones: api.close_connect()
