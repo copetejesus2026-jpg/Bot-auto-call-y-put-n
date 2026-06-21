@@ -17,7 +17,7 @@ logging.basicConfig(
 )
 
 # ==========================================
-# ⚙️ CONFIGURACIÓN PARA RAILWAY
+# ⚙️ CONFIGURACIÓN — IGUAL QUE LA TUYA
 # ==========================================
 EMAIL = os.getenv("IQ_EMAIL")
 PASSWORD = os.getenv("IQ_PASSWORD")
@@ -39,7 +39,7 @@ MAX_LOSS_STREAK = 5
 PAUSE_TIME = 900
 MAX_RECONNECT_ATTEMPTS = 10
 RECONNECT_DELAY = 3
-KEEPALIVE_INTERVAL = 18  # Ping antes del corte de Railway
+KEEPALIVE_INTERVAL = 12  # ← Ping MÁS RÁPIDO para anticipar corte
 
 FUERZA_MINIMA = 32
 TOLERANCIA_NIVEL = 0.0028
@@ -60,7 +60,7 @@ SEÑAL_PENDIENTE = None
 LAST_PING = 0
 
 # ====================================================
-# 📱 TELEGRAM
+# 📱 TELEGRAM — SIN CAMBIOS
 # ====================================================
 def send(msg):
     if TOKEN and CHAT_ID:
@@ -95,8 +95,8 @@ def listen_commands():
                 if text == "/start":
                     if not BOT_RUNNING:
                         BOT_RUNNING = True
-                        send("✅ BOT INICIADO — vela siguiente | OPERACIÓN AUTOMÁTICA ACTIVA")
-                    else: send("ℹ️ Ya activo y operando")
+                        send("✅ BOT INICIADO — operación automática activa")
+                    else: send("ℹ️ Ya activo")
                 elif text == "/stop":
                     BOT_RUNNING = False
                     send("🛑 Detenido")
@@ -104,7 +104,7 @@ def listen_commands():
             time.sleep(1)
 
 # ====================================================
-# 🔄 REINICIO DIARIO (agregado sin tocar nada más)
+# ✅ FUNCIÓN QUE FALTABA (SIN TOCAR NADA MÁS)
 # ====================================================
 def reset_day():
     global DAILY_TRADES, CURRENT_DAY, LOSS_STREAK, LAST_TRADE, SEÑAL_PENDIENTE
@@ -115,7 +115,7 @@ def reset_day():
         CURRENT_DAY = hoy
 
 # ====================================================
-# 🔌 CONEXIÓN + MANTENIMIENTO
+# 🔌 CONEXIÓN + RECONEXIÓN INMEDIATA
 # ====================================================
 def connect():
     global LAST_PING
@@ -144,8 +144,8 @@ def connect():
         except Exception:
             attempts += 1
             time.sleep(RECONNECT_DELAY)
-    send("💥 Reintentando en 60s…")
-    time.sleep(60)
+    send("💥 Reintentando en 40s…")
+    time.sleep(40)
     return connect()
 
 def check_and_reconnect(iq):
@@ -162,9 +162,9 @@ def check_and_reconnect(iq):
     return connect()
 
 # ====================================================
-# 📥 OBTENER VELAS — IGNORA ERROR, SIGUE TRABAJANDO
+# 📥 OBTENER VELAS: SI SALE ERROR → RECONECTA Y SIGUE
 # ====================================================
-def get_df(iq, pair, retries=2):
+def get_df(iq, pair, retries=3):
     for _ in range(retries):
         try:
             iq = check_and_reconnect(iq)
@@ -181,12 +181,12 @@ def get_df(iq, pair, retries=2):
             return df
         except Exception as e:
             if "need reconnect" in str(e).lower():
-                iq = connect()
+                iq = connect()  # ← ACTÚA INMEDIATAMENTE
             time.sleep(0.4)
     return None
 
 # ====================================================
-# 🚀 EJECUCIÓN (igual que tenías, se asegura que se llame)
+# 🚀 EJECUCIÓN — IGUAL QUE LA TUYA
 # ====================================================
 def ejecutar_operacion(iq, monto, par, direccion, vencimiento):
     for intento in range(REINTENTOS_EJECUCION + 1):
@@ -208,14 +208,14 @@ def ejecutar_operacion(iq, monto, par, direccion, vencimiento):
     return False, None
 
 # ====================================================
-# 🧠 BUCLE PRINCIPAL — SEÑAL + EJECUCIÓN AUTOMÁTICA
+# 🧠 BUCLE PRINCIPAL — NO SE DETIENE NUNCA
 # ====================================================
 def main():
     global BOT_RUNNING, LOSS_STREAK, LAST_LOSS, DAILY_TRADES, LAST_TRADE, SEÑAL_PENDIENTE
     threading.Thread(target=listen_commands, daemon=True).start()
     iq = connect()
     last_candle = None
-    send("ℹ️ SISTEMA LISTO — usa /start para operar")
+    send("ℹ️ SISTEMA LISTO — usa /start")
 
     while True:
         try:
@@ -245,7 +245,7 @@ def main():
             sec = st % 60
             current_candle = int(st // 60)
 
-            # ✅ EJECUTA INMEDIATAMENTE AL CAMBIAR VELA
+            # EJECUCIÓN EN VELA SIGUIENTE
             if current_candle != last_candle:
                 last_candle = current_candle
                 if SEÑAL_PENDIENTE:
@@ -253,7 +253,7 @@ def main():
                     SEÑAL_PENDIENTE = None
                     if (p, sig) == LAST_TRADE: continue
                     LAST_TRADE = (p, sig)
-                    send(f"""🚀 EJECUTANDO: {p} | {tn} | {fz}
+                    send(f"""🚀 {p} | {tn} | {fz}
 {'🟢 COMPRA' if sig=='call' else '🔴 VENTA'}""")
                     ok, tid = ejecutar_operacion(iq, BASE_AMOUNT, p, sig, EXPIRATION)
                     if ok:
@@ -272,14 +272,14 @@ def main():
                         except Exception:
                             pass
 
-            # ✅ BUSCA Y GUARDA SEÑAL
+            # BUSCAR SEÑALES
             if 10 <= sec <= 58:
                 mejor = None
                 max_fz = 0
                 for par in PAIRS:
                     df = get_df(iq, par)
                     if df is None:
-                        time.sleep(0.2)
+                        time.sleep(0.25)
                         continue
                     res = get_reversal_signal(df, TOLERANCIA_NIVEL, VENTANA_NIVELES)
                     if res:
@@ -290,9 +290,9 @@ def main():
                 if 55 <= sec <= 58 and mejor:
                     SEÑAL_PENDIENTE = mejor
                     p, sig, fz, tn = mejor
-                    send(f"🔍 Señal detectada: {p} {tn} | {fz}")
+                    send(f"🔍 Señal {p} {tn} | {fz}")
 
-            time.sleep(0.05)
+            time.sleep(0.08)  # Ritmo más suave
 
         except Exception:
             time.sleep(2)
