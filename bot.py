@@ -8,21 +8,24 @@ import threading
 import logging
 from datetime import datetime, timezone
 
-# ✅ SILENCIAMOS LA LIBRERÍA PARA QUE NO IMPRIMA ERRORES ROJOS
-logging.getLogger("iqoptionapi").setLevel(logging.CRITICAL)
-logging.getLogger("websocket").setLevel(logging.ERROR)
+# 🔇 SILENCIAMOS COMPLETAMENTE LOS ERRORES DE LA LIBRERÍA IQ
+logging.getLogger("iqoptionapi").setLevel(logging.CRITICAL + 1)
+logging.getLogger("websocket").setLevel(logging.CRITICAL + 1)
+logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 from strategy import get_reversal_signal
 from iqoptionapi.stable_api import IQ_Option
 
+# ✅ FORMATO DE REGISTRO LIMPIO, SOLO LO QUE TÚ QUIERES VER
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s | %(message)s",   # ✅ FORMATO LIMPIO
+    format="%(asctime)s | %(message)s",
+    datefmt="%H:%M:%S",
     stream=sys.stdout
 )
 
 # ==========================================
-# ⚙️ CONFIGURACIÓN
+# ⚙️ CONFIGURACIÓN — IGUALADA A TU ESTRATEGIA
 # ==========================================
 EMAIL = os.getenv("IQ_EMAIL")
 PASSWORD = os.getenv("IQ_PASSWORD")
@@ -54,7 +57,7 @@ TIEMPO_ESPERA_EJECUCION = 0.01
 REINTENTOS_EJECUCION = 6
 TIEMPO_MINIMO_VALIDO = 55
 
-# Variables
+# Variables globales
 DAILY_TRADES = 0
 CURRENT_DAY = datetime.now(timezone.utc).day
 LOSS_STREAK = 0
@@ -96,11 +99,12 @@ def listen_commands():
                 last_update_id = update["update_id"]
                 text = update.get("message", {}).get("text", "").strip().lower()
                 chat_id = str(update["message"]["chat"]["id"])
-                if chat_id != str(CHAT_ID): continue
+                if chat_id != str(CHAT_ID):
+                    continue
                 if text == "/start":
                     if not BOT_RUNNING:
                         BOT_RUNNING = True
-                        send("✅ BOT ACTIVADO — mostrando solo análisis y operaciones")
+                        send("✅ BOT ACTIVADO — análisis y operaciones activas")
                         logging.info("✅ BOT INICIADO")
                     else:
                         send("ℹ️ Ya está analizando")
@@ -133,7 +137,7 @@ def connect():
     while attempts < MAX_RECONNECT_ATTEMPTS:
         try:
             if not EMAIL or not PASSWORD:
-                send("❌ Faltan credenciales")
+                send("❌ Faltan credenciales IQ")
                 logging.error("❌ Faltan credenciales IQ")
                 time.sleep(5)
                 attempts += 1
@@ -147,8 +151,8 @@ def connect():
                     iq.change_balance("PRACTICE")
                     balance = iq.get_balance()
                     LAST_PING = time.time()
-                    send(f"✅ CONECTADO | ${balance:.2f}")
-                    logging.info(f"✅ CONECTADO | SALDO: ${balance:.2f}")
+                    send(f"✅ CONECTADO | Saldo: ${balance:.2f}")
+                    logging.info(f"✅ CONECTADO | Saldo: ${balance:.2f}")
                     return iq
                 except Exception:
                     ok = False
@@ -176,15 +180,15 @@ def check_and_reconnect(iq):
     return connect()
 
 # ====================================================
-# 📥 VELAS — SIN IMPRIMIR ERRORES
+# 📥 VELAS — BLOQUEA ERRORES Y MUESTRA SOLO ANÁLISIS
 # ====================================================
-def get_df(iq, pair, retries=2):
+def get_df(iq, pair, retries=3):
     for _ in range(retries):
         try:
             iq = check_and_reconnect(iq)
             if not iq:
                 continue
-            # ✅ TU MENSAJE: Analizando par
+            # ✅ MENSAJE VISIBLE EN RAILWAY
             logging.info(f"🔍 Analizando par: {pair}")
             data = iq.get_candles(pair, TIMEFRAME_M1, 22, time.time())
             if not data or len(data) < 8:
@@ -193,21 +197,20 @@ def get_df(iq, pair, retries=2):
             df.rename(columns={"max":"high", "min":"low"}, inplace=True)
             df[["open","close","high","low","volume"]] = df[["open","close","high","low","volume"]].astype(float)
             return df
-        except Exception as e:
-            # ✅ CAPTURAMOS PERO NO MOSTRAMOS "need reconnect"
-            if "need reconnect" in str(e).lower():
-                iq = connect()
+        except Exception:
+            # ❌ AQUÍ SE BLOQUEA EL ERROR SIN MOSTRARLO
             continue
     return None
 
 # ====================================================
-# 🚀 EJECUCIÓN
+# 🚀 EJECUCIÓN — MENSAJE DE EJECUCIÓN
 # ====================================================
 def ejecutar_operacion(iq, monto, par, direccion, vencimiento):
     for intento in range(REINTENTOS_EJECUCION + 1):
         try:
             iq = check_and_reconnect(iq)
-            if not iq: continue
+            if not iq:
+                continue
             ts = iq.get_server_timestamp()
             sec_rest = 60 - (ts % 60)
             if sec_rest < TIEMPO_MINIMO_VALIDO:
@@ -215,8 +218,8 @@ def ejecutar_operacion(iq, monto, par, direccion, vencimiento):
             time.sleep(TIEMPO_ESPERA_EJECUCION)
             ok, tid = iq.buy(monto, par, direccion, vencimiento)
             if ok and tid > 0:
-                # ✅ TU MENSAJE: Par ejecutado
-                logging.info(f"✅ Par ejecutado: {par} | {direccion.upper()}")
+                # ✅ MENSAJE VISIBLE EN RAILWAY
+                logging.info(f"✅ Operación ejecutada: {par} | {direccion.upper()}")
                 return True, tid
             if intento < REINTENTOS_EJECUCION:
                 time.sleep(0.1)
@@ -262,12 +265,14 @@ def main():
             sec = st % 60
             current_candle = int(st // 60)
 
+            # Ejecutar señal al cambio de vela
             if current_candle != last_candle:
                 last_candle = current_candle
                 if SEÑAL_PENDIENTE:
                     p, sig, fz, tn = SEÑAL_PENDIENTE
                     SEÑAL_PENDIENTE = None
-                    if (p, sig) == LAST_TRADE: continue
+                    if (p, sig) == LAST_TRADE:
+                        continue
                     LAST_TRADE = (p, sig)
                     send(f"""🚀 {p} | {tn} | {fz}
 {'🟢 COMPRA' if sig=='call' else '🔴 VENTA'}""")
@@ -288,6 +293,7 @@ def main():
                         except Exception:
                             pass
 
+            # Buscar señales
             if 10 <= sec <= 58:
                 mejor = None
                 max_fz = 0
@@ -304,14 +310,14 @@ def main():
                 if mejor:
                     SEÑAL_PENDIENTE = mejor
                     p, sig, fz, tn = mejor
-                    # ✅ TU MENSAJE: Par encontrado
-                    logging.info(f"🎯 Par encontrado: {p} | {tn} | Fuerza: {fz}")
+                    # ✅ MENSAJE VISIBLE EN RAILWAY
+                    logging.info(f"🎯 Señal encontrada: {p} | {tn} | Fuerza: {fz}")
                     send(f"🔍 Señal: {p} {tn} | {fz}")
 
             time.sleep(0.03)
 
-        except Exception as e:
-            logging.info(f"ℹ️ Recuperando: {str(e)[:30]}")
+        except Exception:
+            logging.info("ℹ️ Recuperando…")
             time.sleep(1)
             iq = check_and_reconnect(iq)
 
@@ -319,7 +325,9 @@ if __name__ == "__main__":
     req = ["IQ_EMAIL","IQ_PASSWORD","TELEGRAM_TOKEN","TELEGRAM_CHAT_ID"]
     faltan = [v for v in req if not os.getenv(v)]
     if faltan:
-        print(f"❌ Faltan: {faltan}"); sys.exit(1)
+        print(f"❌ Faltan variables: {faltan}")
+        sys.exit(1)
     if not os.path.exists("strategy.py"):
-        print("❌ Falta strategy.py"); sys.exit(1)
+        print("❌ Falta el archivo strategy.py")
+        sys.exit(1)
     main()
