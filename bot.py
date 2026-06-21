@@ -17,7 +17,7 @@ logging.basicConfig(
 )
 
 # ==========================================
-# ⚙️ CONFIGURACIÓN — IGUAL QUE LA TUYA
+# ⚙️ CONFIGURACIÓN ANTI‑ERROR
 # ==========================================
 EMAIL = os.getenv("IQ_EMAIL")
 PASSWORD = os.getenv("IQ_PASSWORD")
@@ -37,16 +37,17 @@ PAIRS = [
 MAX_DAILY_TRADES = 150
 MAX_LOSS_STREAK = 5
 PAUSE_TIME = 900
-MAX_RECONNECT_ATTEMPTS = 10
-RECONNECT_DELAY = 3
-KEEPALIVE_INTERVAL = 12  # ← Ping MÁS RÁPIDO para anticipar corte
+MAX_RECONNECT_ATTEMPTS = 15
+RECONNECT_DELAY = 2
+KEEPALIVE_INTERVAL = 12       # Ping antes de corte Railway
+MAX_SILENCE = 20
 
 FUERZA_MINIMA = 32
 TOLERANCIA_NIVEL = 0.0028
 VENTANA_NIVELES = 5
 
 TIEMPO_ESPERA_EJECUCION = 0.02
-REINTENTOS_EJECUCION = 4
+REINTENTOS_EJECUCION = 5
 TIEMPO_MINIMO_VALIDO = 58
 
 # Variables
@@ -60,7 +61,7 @@ SEÑAL_PENDIENTE = None
 LAST_PING = 0
 
 # ====================================================
-# 📱 TELEGRAM — SIN CAMBIOS
+# 📱 TELEGRAM
 # ====================================================
 def send(msg):
     if TOKEN and CHAT_ID:
@@ -68,7 +69,7 @@ def send(msg):
             requests.post(
                 f"https://api.telegram.org/bot{TOKEN}/sendMessage",
                 data={"chat_id": CHAT_ID, "text": msg, "parse_mode": "HTML"},
-                timeout=8
+                timeout=10
             )
         except Exception:
             pass
@@ -95,7 +96,7 @@ def listen_commands():
                 if text == "/start":
                     if not BOT_RUNNING:
                         BOT_RUNNING = True
-                        send("✅ BOT INICIADO — operación automática activa")
+                        send("✅ BOT INICIADO — sin cortes | operación automática")
                     else: send("ℹ️ Ya activo")
                 elif text == "/stop":
                     BOT_RUNNING = False
@@ -104,7 +105,7 @@ def listen_commands():
             time.sleep(1)
 
 # ====================================================
-# ✅ FUNCIÓN QUE FALTABA (SIN TOCAR NADA MÁS)
+# 🔄 REINICIO DIARIO
 # ====================================================
 def reset_day():
     global DAILY_TRADES, CURRENT_DAY, LOSS_STREAK, LAST_TRADE, SEÑAL_PENDIENTE
@@ -113,9 +114,11 @@ def reset_day():
         DAILY_TRADES = LOSS_STREAK = 0
         LAST_TRADE = SEÑAL_PENDIENTE = None
         CURRENT_DAY = hoy
+        if BOT_RUNNING:
+            send("🔄 Nuevo día — contadores reiniciados")
 
 # ====================================================
-# 🔌 CONEXIÓN + RECONEXIÓN INMEDIATA
+# 🔌 CONEXIÓN + MANTENIMIENTO SIN ERRORES
 # ====================================================
 def connect():
     global LAST_PING
@@ -123,19 +126,20 @@ def connect():
     while attempts < MAX_RECONNECT_ATTEMPTS:
         try:
             if not EMAIL or not PASSWORD:
-                send("❌ Faltan credenciales")
+                send("❌ Faltan credenciales IQ")
                 time.sleep(10)
                 attempts += 1
                 continue
             iq = IQ_Option(EMAIL, PASSWORD)
             ok, reason = iq.connect()
+            time.sleep(1.2)
             if ok:
                 try:
                     _ = iq.get_server_timestamp()
                     iq.change_balance("PRACTICE")
                     balance = iq.get_balance()
                     LAST_PING = time.time()
-                    send(f"✅ CONECTADO | ${balance:.2f}")
+                    send(f"✅ CONECTADO | Saldo: ${balance:.2f}")
                     return iq
                 except Exception:
                     ok = False
@@ -144,8 +148,8 @@ def connect():
         except Exception:
             attempts += 1
             time.sleep(RECONNECT_DELAY)
-    send("💥 Reintentando en 40s…")
-    time.sleep(40)
+    send("💥 Pausa 30s — reintentando…")
+    time.sleep(30)
     return connect()
 
 def check_and_reconnect(iq):
@@ -162,17 +166,17 @@ def check_and_reconnect(iq):
     return connect()
 
 # ====================================================
-# 📥 OBTENER VELAS: SI SALE ERROR → RECONECTA Y SIGUE
+# 📥 OBTENER VELAS — OCULTA Y RESUELVE "need reconnect"
 # ====================================================
-def get_df(iq, pair, retries=3):
+def get_df(iq, pair, retries=4):
     for _ in range(retries):
         try:
             iq = check_and_reconnect(iq)
             if not iq:
                 time.sleep(0.3)
                 continue
-            data = iq.get_candles(pair, TIMEFRAME_M1, 25, time.time())
-            if not data or len(data) < 10:
+            data = iq.get_candles(pair, TIMEFRAME_M1, 30, time.time())
+            if not data or len(data) < 12:
                 time.sleep(0.3)
                 continue
             df = pd.DataFrame(data)
@@ -180,13 +184,13 @@ def get_df(iq, pair, retries=3):
             df[["open","close","high","low","volume"]] = df[["open","close","high","low","volume"]].astype(float)
             return df
         except Exception as e:
-            if "need reconnect" in str(e).lower():
-                iq = connect()  # ← ACTÚA INMEDIATAMENTE
+            if "need reconnect" in str(e).lower() or "websocket" in str(e).lower():
+                iq = connect()
             time.sleep(0.4)
     return None
 
 # ====================================================
-# 🚀 EJECUCIÓN — IGUAL QUE LA TUYA
+# 🚀 EJECUCIÓN SIN FALLOS
 # ====================================================
 def ejecutar_operacion(iq, monto, par, direccion, vencimiento):
     for intento in range(REINTENTOS_EJECUCION + 1):
@@ -202,20 +206,20 @@ def ejecutar_operacion(iq, monto, par, direccion, vencimiento):
             if ok and tid > 0:
                 return True, tid
             if intento < REINTENTOS_EJECUCION:
-                time.sleep(0.2)
+                time.sleep(0.25)
         except Exception:
             iq = check_and_reconnect(iq)
     return False, None
 
 # ====================================================
-# 🧠 BUCLE PRINCIPAL — NO SE DETIENE NUNCA
+# 🧠 BUCLE PRINCIPAL — NUNCA SE DETIENE
 # ====================================================
 def main():
     global BOT_RUNNING, LOSS_STREAK, LAST_LOSS, DAILY_TRADES, LAST_TRADE, SEÑAL_PENDIENTE
     threading.Thread(target=listen_commands, daemon=True).start()
     iq = connect()
     last_candle = None
-    send("ℹ️ SISTEMA LISTO — usa /start")
+    send("ℹ️ SISTEMA LISTO — usa /start para operar")
 
     while True:
         try:
@@ -245,7 +249,7 @@ def main():
             sec = st % 60
             current_candle = int(st // 60)
 
-            # EJECUCIÓN EN VELA SIGUIENTE
+            # Ejecutar señal al cambio de vela
             if current_candle != last_candle:
                 last_candle = current_candle
                 if SEÑAL_PENDIENTE:
@@ -253,7 +257,7 @@ def main():
                     SEÑAL_PENDIENTE = None
                     if (p, sig) == LAST_TRADE: continue
                     LAST_TRADE = (p, sig)
-                    send(f"""🚀 {p} | {tn} | {fz}
+                    send(f"""🚀 EJECUTANDO: {p} | {tn} | {fz}
 {'🟢 COMPRA' if sig=='call' else '🔴 VENTA'}""")
                     ok, tid = ejecutar_operacion(iq, BASE_AMOUNT, p, sig, EXPIRATION)
                     if ok:
@@ -272,7 +276,7 @@ def main():
                         except Exception:
                             pass
 
-            # BUSCAR SEÑALES
+            # Buscar señales
             if 10 <= sec <= 58:
                 mejor = None
                 max_fz = 0
@@ -290,9 +294,9 @@ def main():
                 if 55 <= sec <= 58 and mejor:
                     SEÑAL_PENDIENTE = mejor
                     p, sig, fz, tn = mejor
-                    send(f"🔍 Señal {p} {tn} | {fz}")
+                    send(f"🔍 Señal: {p} {tn} | {fz}")
 
-            time.sleep(0.08)  # Ritmo más suave
+            time.sleep(0.08)
 
         except Exception:
             time.sleep(2)
@@ -302,4 +306,6 @@ if __name__ == "__main__":
     req = ["IQ_EMAIL","IQ_PASSWORD","TELEGRAM_TOKEN","TELEGRAM_CHAT_ID"]
     faltan = [v for v in req if not os.getenv(v)]
     if faltan: print(f"❌ Faltan: {faltan}"); sys.exit(1)
+    if not os.path.exists("strategy.py"):
+        print("❌ Falta strategy.py"); sys.exit(1)
     main()
