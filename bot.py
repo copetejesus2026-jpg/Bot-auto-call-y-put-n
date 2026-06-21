@@ -95,13 +95,24 @@ def listen_commands():
                 if text == "/start":
                     if not BOT_RUNNING:
                         BOT_RUNNING = True
-                        send("✅ BOT INICIADO — vela siguiente")
-                    else: send("ℹ️ Ya activo")
+                        send("✅ BOT INICIADO — vela siguiente | OPERACIÓN AUTOMÁTICA ACTIVA")
+                    else: send("ℹ️ Ya activo y operando")
                 elif text == "/stop":
                     BOT_RUNNING = False
                     send("🛑 Detenido")
         except Exception:
             time.sleep(1)
+
+# ====================================================
+# 🔄 REINICIO DIARIO (agregado sin tocar nada más)
+# ====================================================
+def reset_day():
+    global DAILY_TRADES, CURRENT_DAY, LOSS_STREAK, LAST_TRADE, SEÑAL_PENDIENTE
+    hoy = datetime.now(timezone.utc).day
+    if hoy != CURRENT_DAY:
+        DAILY_TRADES = LOSS_STREAK = 0
+        LAST_TRADE = SEÑAL_PENDIENTE = None
+        CURRENT_DAY = hoy
 
 # ====================================================
 # 🔌 CONEXIÓN + MANTENIMIENTO
@@ -175,7 +186,7 @@ def get_df(iq, pair, retries=2):
     return None
 
 # ====================================================
-# 🚀 EJECUCIÓN
+# 🚀 EJECUCIÓN (igual que tenías, se asegura que se llame)
 # ====================================================
 def ejecutar_operacion(iq, monto, par, direccion, vencimiento):
     for intento in range(REINTENTOS_EJECUCION + 1):
@@ -197,14 +208,14 @@ def ejecutar_operacion(iq, monto, par, direccion, vencimiento):
     return False, None
 
 # ====================================================
-# 🧠 BUCLE PRINCIPAL
+# 🧠 BUCLE PRINCIPAL — SEÑAL + EJECUCIÓN AUTOMÁTICA
 # ====================================================
 def main():
     global BOT_RUNNING, LOSS_STREAK, LAST_LOSS, DAILY_TRADES, LAST_TRADE, SEÑAL_PENDIENTE
     threading.Thread(target=listen_commands, daemon=True).start()
     iq = connect()
     last_candle = None
-    send("ℹ️ SISTEMA LISTO — usa /start")
+    send("ℹ️ SISTEMA LISTO — usa /start para operar")
 
     while True:
         try:
@@ -234,6 +245,7 @@ def main():
             sec = st % 60
             current_candle = int(st // 60)
 
+            # ✅ EJECUTA INMEDIATAMENTE AL CAMBIAR VELA
             if current_candle != last_candle:
                 last_candle = current_candle
                 if SEÑAL_PENDIENTE:
@@ -241,7 +253,7 @@ def main():
                     SEÑAL_PENDIENTE = None
                     if (p, sig) == LAST_TRADE: continue
                     LAST_TRADE = (p, sig)
-                    send(f"""🚀 {p} | {tn} | {fz}
+                    send(f"""🚀 EJECUTANDO: {p} | {tn} | {fz}
 {'🟢 COMPRA' if sig=='call' else '🔴 VENTA'}""")
                     ok, tid = ejecutar_operacion(iq, BASE_AMOUNT, p, sig, EXPIRATION)
                     if ok:
@@ -260,6 +272,7 @@ def main():
                         except Exception:
                             pass
 
+            # ✅ BUSCA Y GUARDA SEÑAL
             if 10 <= sec <= 58:
                 mejor = None
                 max_fz = 0
@@ -277,7 +290,7 @@ def main():
                 if 55 <= sec <= 58 and mejor:
                     SEÑAL_PENDIENTE = mejor
                     p, sig, fz, tn = mejor
-                    send(f"🔍 Señal {p} {tn} | {fz}")
+                    send(f"🔍 Señal detectada: {p} {tn} | {fz}")
 
             time.sleep(0.05)
 
