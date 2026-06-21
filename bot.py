@@ -6,6 +6,7 @@ import numpy as np
 import sys
 import threading
 import logging
+import gc
 from datetime import datetime, timezone
 
 logging.basicConfig(
@@ -35,9 +36,11 @@ PARES = [
 MAX_DAILY_TRADES = 100
 MAX_LOSS_STREAK = 5
 PAUSE_TIME = 900
-MAX_RECONNECT_ATTEMPTS = 12
-RECONNECT_DELAY = 5          # Espera mayor para que el servidor responda
+MAX_RECONNECT_ATTEMPTS = 15
+RECONNECT_DELAY = 5
 RECONNECT_DELAY_LONG = 30
+PING_INTERVAL = 20           # Comprobar conexión cada 20 seg
+MAX_SILENCE = 45             # Reiniciar si no hay datos 45 seg
 
 FUERZA_MINIMA = 35
 TOLERANCIA_NIVEL = 0.0018
@@ -46,7 +49,7 @@ VENTANA_NIVELES = 5
 TIEMPO_ESPERA_EJECUCION = 0.3
 REINTENTOS_EJECUCION = 4
 TIEMPO_MINIMO_VALIDO = 57
-ESPERA_TRAS_ERROR = 1.0      # Evita saturar conexión tras fallo
+ESPERA_TRAS_ERROR = 1.2
 
 # Variables globales
 DAILY_TRADES = 0
@@ -57,6 +60,8 @@ LAST_TRADE = None
 BOT_RUNNING = False
 SEÑAL_PENDIENTE = None
 IQ_API = None
+LAST_PING = 0
+LAST_DATA = 0
 
 # ====================================================
 # 📱 TELEGRAM
@@ -116,12 +121,12 @@ def reset_day():
         if BOT_RUNNING: send("🔄 Nuevo día — contadores reiniciados")
 
 # ====================================================
-# 🔌 CONEXIÓN ESTABLE — SOLUCIÓN CLAVE
+# 🔌 CONEXIÓN + PING MANUAL — CLAVE DEL ÉXITO
 # ====================================================
 from iqoptionapi.stable_api import IQ_Option
 
 def connect():
-    global IQ_API
+    global IQ_API, LAST_PING, LAST_DATA
     attempts = 0
     while attempts < MAX_RECONNECT_ATTEMPTS:
         try:
@@ -130,52 +135,66 @@ def connect():
                 time.sleep(RECONNECT_DELAY_LONG)
                 attempts += 1
                 continue
-            # Eliminar instancia anterior completamente
-            if 'IQ_API' in globals() and IQ_API is not None:
+            # ✅ Limpieza total para evitar sesiones fantasma
+            if IQ_API is not None:
                 try:
                     IQ_API.close_connect()
-                    del IQ_API
                 except:
                     pass
-            IQ_API = None
-            time.sleep(1) # Espera limpieza
+                IQ_API = None
+                gc.collect()
+            time.sleep(2)
 
-            # Crear nueva instancia + espera extra
             IQ_API = IQ_Option(EMAIL, PASSWORD)
             ok, reason = IQ_API.connect()
-            time.sleep(2) # ⏱️ Fundamental para Railway: deja que termine handshake
+            time.sleep(3) # Tiempo extra para estabilizar WebSocket
 
             if ok:
-                IQ_API.change_balance("PRACTICE") # Cambia a "REAL" si vas a operar real
+                IQ_API.change_balance("PRACTICE") # Cambia a "REAL" si deseas
                 balance = IQ_API.get_balance()
+                LAST_PING = LAST_DATA = time.time()
                 send(f"✅ CONECTADO | Saldo: ${balance:.2f}")
                 return IQ_API
             else:
-                logging.warning(f"Intento {attempts+1} fallido: {reason}")
+                logging.warning(f"Intento {attempts+1}: {reason}")
         except Exception as e:
             logging.error(f"Error conexión: {str(e)}")
         attempts += 1
         time.sleep(RECONNECT_DELAY)
-    send("💥 Reinicio completo en 40 segundos…")
+    send("💥 Reinicio completo en 40 seg…")
     time.sleep(40)
     return connect()
 
-def ensure_connection():
-    """Verificación estricta antes de cada llamada"""
-    global IQ_API
+def ping_server():
+    """Mantiene conexión viva sin esperar errores"""
+    global LAST_PING, LAST_DATA
     try:
         if IQ_API and IQ_API.check_connect():
+            _ = IQ_API.get_server_timestamp()
+            LAST_PING = time.time()
             return True
-    except Exception as e:
-        logging.warning(f"Conexión perdida: {e}")
-    logging.info("⚠️ Reconectando para evitar 'need reconnect'…")
-    IQ_API = connect()
+    except:
+        return False
+    return False
+
+def ensure_connection():
+    """Verificación PREVENTIVA: reconecta ANTES de que falle"""
+    global IQ_API, LAST_DATA
+    now = time.time()
+    # Ping periódico
+    if now - LAST_PING > PING_INTERVAL:
+        ping_server()
+    # Reinicio si no hay actividad
+    if not IQ_API or not IQ_API.check_connect() or (now - LAST_DATA > MAX_SILENCE):
+        logging.warning("⚠️ Sesión inactiva o rota — reiniciando…")
+        IQ_API = connect()
     return IQ_API is not None
 
 # ====================================================
-# 📥 OBTENER VELAS — SIN ERRORES
+# 📥 OBTENER VELAS — LLAMADA SEGURA
 # ====================================================
-def get_df(iq, pair, retries=4):
+def get_df(iq, pair, retries=5):
+    global LAST_DATA
     for _ in range(retries):
         try:
             if not ensure_connection():
@@ -188,12 +207,14 @@ def get_df(iq, pair, retries=4):
             df = pd.DataFrame(data)
             df.rename(columns={"max":"high", "min":"low"}, inplace=True)
             df[["open","close","high","low","volume"]] = df[["open","close","high","low","volume"]].astype(float)
+            LAST_DATA = time.time() # ✅ Confirma actividad válida
             return df
         except Exception as e:
             err = str(e).lower()
             logging.error(f"{pair}: {err}")
-            if "reconnect" in err or "connection" in err:
-                ensure_connection() # Recuperación inmediata al error
+            # ✅ Reconexión inmediata solo al error exacto
+            if "need reconnect" in err or "connection" in err or "timed out" in err:
+                ensure_connection()
             time.sleep(ESPERA_TRAS_ERROR)
     return None
 
@@ -292,7 +313,7 @@ def main():
                     SEÑAL_PENDIENTE = mejor
                     par, sig, fz, tn = mejor
                     send(f"🔍 Señal {par} {tn} | Fuerza: {fz}")
-            time.sleep(0.1) # Evita saturación CPU/red
+            time.sleep(0.1)
         except Exception as e:
             send(f"💥 Error: {str(e)} — reconectando…")
             logging.exception("Error global")
@@ -302,6 +323,6 @@ def main():
 if __name__ == "__main__":
     req = ["IQ_EMAIL","IQ_PASSWORD","TELEGRAM_TOKEN","TELEGRAM_CHAT_ID"]
     faltan = [v for v in req if not os.getenv(v)]
-    if faltan: print(f"❌ Faltan variables: {faltan}"); sys.exit(1)
+    if faltan: print(f"❌ Faltan vars: {faltan}"); sys.exit(1)
     if not os.path.exists("strategy.py"): print("❌ Falta strategy.py"); sys.exit(1)
     main()
