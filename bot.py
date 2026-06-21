@@ -40,7 +40,7 @@ MAX_RECONNECT_ATTEMPTS = 8
 RECONNECT_DELAY = 10
 RECONNECT_DELAY_LONG = 90
 MAX_SILENCE = 20
-**RECONNECT_INTERVAL = 25  # ⏱️ RECONEXIÓN FORZADA CADA 25s (antes de que corte Railway)**
+RECONNECT_INTERVAL = 25  # ✅ SIN **: RECONEXIÓN FORZADA CADA 25s (antes de que corte Railway)
 
 FUERZA_MINIMA = 35
 TOLERANCIA_NIVEL = 0.0018
@@ -172,7 +172,7 @@ def ensure_connection():
     """Verifica + reinicia automáticamente antes de que corte Railway"""
     global IQ_API, LAST_VALID, LAST_FORCED_RECONNECT
     ahora = time.time()
-    # ✅ RECONEXIÓN FORZADA CADA 25s, SIN ESPERAR ERROR
+    # RECONEXIÓN FORZADA CADA 25s, SIN ESPERAR ERROR
     if ahora - LAST_FORCED_RECONNECT > RECONNECT_INTERVAL:
         logging.info("🔄 Reconexión programada para Railway…")
         IQ_API = connect()
