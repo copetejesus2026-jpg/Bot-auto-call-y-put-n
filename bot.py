@@ -8,7 +8,6 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from iqoptionapi.stable_api import IQ_Option
 from strategy import get_reversal_signal
 
-# VARIABLES
 TOKEN = os.getenv("BOT_TOKEN")
 IQ_EMAIL = os.getenv("IQ_EMAIL")
 IQ_PASSWORD = os.getenv("IQ_PASSWORD")
@@ -28,7 +27,6 @@ EXPIRACION = 1
 
 Iq = None
 
-# CONEXIÓN IQ
 def conectar_iq():
     try:
         print("🔌 Conectando a IQ Option...")
@@ -40,28 +38,22 @@ def conectar_iq():
 
         print("✅ Conectado a IQ Option")
         return iq
-
     except Exception as e:
-        print(f"❌ Error IQ: {e}")
+        print(f"Error IQ: {e}")
         return None
 
-# DATOS
 def get_candles():
     candles = Iq.get_candles(PAR, TIMEFRAME, 50, time.time())
     df = pd.DataFrame(candles)
     df.rename(columns={"max": "high", "min": "low"}, inplace=True)
     return df
 
-# TRADE
 def ejecutar_trade(direccion):
     try:
         status, trade_id = Iq.buy(CANTIDAD, PAR, direccion, EXPIRACION)
         return status, trade_id
-    except Exception as e:
-        print(e)
+    except:
         return False, None
-
-# COMANDOS
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🤖 Bot activo 🚀")
@@ -91,7 +83,6 @@ async def operar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("❌ Error trade")
 
-# MAIN
 def main():
     global Iq
 
