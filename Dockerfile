@@ -5,10 +5,12 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
+# 👇 AQUÍ ESTÁ LA CLAVE: agregar git
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     libffi-dev \
     libssl-dev \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
