@@ -27,18 +27,30 @@ TIMEFRAME = 60
 CANTIDAD = 1
 EXPIRACION = 1
 
-# 🔌 CONEXIÓN IQ OPTION
-Iq = IQ_Option(IQ_EMAIL, IQ_PASSWORD)
-Iq.connect()
+Iq = None
 
-if not Iq.check_connect():
-    print("❌ Error conectando a IQ Option")
-    sys.exit(1)
+# 🔌 CONEXIÓN SEGURA IQ OPTION
+def conectar_iq():
+    try:
+        print("🔌 Conectando a IQ Option...")
 
-print("✅ Conectado a IQ Option")
+        iq = IQ_Option(IQ_EMAIL, IQ_PASSWORD)
+        iq.connect()
+
+        if not iq.check_connect():
+            print("❌ No se pudo conectar a IQ Option")
+            return None
+
+        print("✅ Conectado a IQ Option")
+        return iq
+
+    except Exception as e:
+        print(f"❌ Error conexión IQ: {e}")
+        return None
 
 # 📊 OBTENER VELAS
 def get_candles():
+    global Iq
     candles = Iq.get_candles(PAR, TIMEFRAME, 50, time.time())
 
     df = pd.DataFrame(candles)
@@ -48,6 +60,7 @@ def get_candles():
 
 # 💰 EJECUTAR TRADE
 def ejecutar_trade(direccion):
+    global Iq
     try:
         status, trade_id = Iq.buy(
             CANTIDAD,
@@ -58,7 +71,7 @@ def ejecutar_trade(direccion):
 
         return status, trade_id
     except Exception as e:
-        print(f"Error trade: {e}")
+        print(f"❌ Error trade: {e}")
         return False, None
 
 # 🤖 COMANDOS TELEGRAM
@@ -79,9 +92,9 @@ async def set_monto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global CANTIDAD
     try:
         CANTIDAD = float(context.args[0])
-        await update.message.reply_text(f"💰 Importe actualizado a: ${CANTIDAD}")
+        await update.message.reply_text(f"💰 Importe actualizado: ${CANTIDAD}")
     except:
-        await update.message.reply_text("Uso: /monto 5")
+        await update.message.reply_text("Uso correcto: /monto 5")
 
 # 🔧 CAMBIAR EXPIRACIÓN
 async def set_exp(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -90,11 +103,21 @@ async def set_exp(update: Update, context: ContextTypes.DEFAULT_TYPE):
         EXPIRACION = int(context.args[0])
         await update.message.reply_text(f"⏱️ Expiración: {EXPIRACION} min")
     except:
-        await update.message.reply_text("Uso: /exp 1")
+        await update.message.reply_text("Uso correcto: /exp 1")
 
 # 🔥 ANALIZAR + OPERAR
 async def operar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global Iq
+
     try:
+        if Iq is None or not Iq.check_connect():
+            await update.message.reply_text("🔄 Reconectando IQ Option...")
+            Iq = conectar_iq()
+
+            if Iq is None:
+                await update.message.reply_text("❌ No se pudo conectar a IQ Option")
+                return
+
         await update.message.reply_text("🔎 Analizando mercado...")
 
         df = get_candles()
@@ -121,10 +144,26 @@ async def operar(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Error al ejecutar trade")
 
     except Exception as e:
+        print(f"ERROR OPERAR: {e}")
         await update.message.reply_text(f"⚠️ Error: {e}")
 
+# 🚀 MAIN
 def main():
+    global Iq
+
     print("🚀 Iniciando bot...")
+
+    # 🔌 Primera conexión
+    Iq = conectar_iq()
+
+    if Iq is None:
+        print("❌ Falló conexión inicial, reintentando en 10s...")
+        time.sleep(10)
+        Iq = conectar_iq()
+
+    if Iq is None:
+        print("❌ No se pudo conectar a IQ Option. Cerrando.")
+        sys.exit(1)
 
     app = ApplicationBuilder().token(TOKEN).build()
 
