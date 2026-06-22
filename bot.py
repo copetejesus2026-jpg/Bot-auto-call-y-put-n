@@ -8,7 +8,7 @@ import threading
 import logging
 from datetime import datetime, timezone
 
-# ✅ BLOQUEO TOTAL DE SALIDA NO DESEADA
+# Bloqueo total de mensajes de error de la librería
 class BlockOutput:
     def __init__(self):
         self._stdout_fd = os.dup(1)
@@ -37,7 +37,7 @@ with BlockOutput():
     from strategy import get_reversal_signal
     from iqoptionapi.stable_api import IQ_Option
 
-# Activar solo tus mensajes
+# Mostrar solo tus mensajes
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(message)s",
