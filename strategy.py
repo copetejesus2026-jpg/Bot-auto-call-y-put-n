@@ -4,6 +4,7 @@ import numpy as np
 # ================= INDICADORES =================
 
 def add_indicators(df):
+    df = df.copy()
 
     # EMA
     df["ema20"] = df["close"].ewm(span=20).mean()
@@ -20,7 +21,6 @@ def add_indicators(df):
     )
 
     true_range = ranges.max(axis=1)
-
     df["atr"] = true_range.rolling(14).mean()
 
     # RSI
@@ -32,18 +32,24 @@ def add_indicators(df):
     avg_gain = gain.rolling(14).mean()
     avg_loss = loss.rolling(14).mean()
 
-    rs = avg_gain / avg_loss
-
+    rs = avg_gain / avg_loss.replace(0, np.nan)
     df["rsi"] = 100 - (100 / (1 + rs))
 
     return df
 
+
 # ================= TENDENCIA =================
 
 def trend(df):
+    if len(df) < 60:
+        return None
 
-    ema20 = df["ema20"].iloc[-1]
-    ema50 = df["ema50"].iloc[-1]
+    # VELA CERRADA
+    ema20 = df["ema20"].iloc[-2]
+    ema50 = df["ema50"].iloc[-2]
+
+    if pd.isna(ema20) or pd.isna(ema50):
+        return None
 
     if ema20 > ema50:
         return "call"
@@ -53,28 +59,31 @@ def trend(df):
 
     return None
 
+
 # ================= IMPULSO =================
 
 def strong_candle(candle):
-
     body = abs(candle["close"] - candle["open"])
     full = candle["high"] - candle["low"]
 
     if full == 0:
         return False
 
-    return body / full > 0.55
+    return (body / full) > 0.55
+
 
 # ================= CONTINUIDAD =================
 
 def continuation(df, direction):
+    if len(df) < 4:
+        return False
 
-    c1 = df.iloc[-1]
-    c2 = df.iloc[-2]
+    # SOLO VELAS CERRADAS
+    c1 = df.iloc[-2]
+    c2 = df.iloc[-3]
 
     # CALL
     if direction == "call":
-
         if (
             c1["close"] > c1["open"] and
             c2["close"] > c2["open"] and
@@ -85,7 +94,6 @@ def continuation(df, direction):
 
     # PUT
     if direction == "put":
-
         if (
             c1["close"] < c1["open"] and
             c2["close"] < c2["open"] and
@@ -96,72 +104,80 @@ def continuation(df, direction):
 
     return False
 
+
 # ================= SOPORTE / RESISTENCIA =================
 
 def support_resistance(df):
-
     highs = []
     lows = []
 
-    # buscar pivotes
-    for i in range(10, len(df)-10):
+    if len(df) < 30:
+        return highs, lows
 
+    for i in range(10, len(df) - 10):
         high = df["high"].iloc[i]
         low = df["low"].iloc[i]
 
         # resistencia
-        if (
-            high == max(df["high"].iloc[i-5:i+5])
-        ):
+        if high == max(df["high"].iloc[i - 5:i + 5]):
             highs.append(high)
 
         # soporte
-        if (
-            low == min(df["low"].iloc[i-5:i+5])
-        ):
+        if low == min(df["low"].iloc[i - 5:i + 5]):
             lows.append(low)
 
     return highs, lows
 
+
 # ================= FILTRO REVERSION =================
 
 def near_reversal_zone(df):
+    if len(df) < 30:
+        return False
 
-    price = df["close"].iloc[-1]
-    atr = df["atr"].iloc[-1]
+    # VELA CERRADA
+    price = df["close"].iloc[-2]
+    atr = df["atr"].iloc[-2]
+
+    if pd.isna(atr):
+        return False
 
     highs, lows = support_resistance(df)
-
     zone_distance = atr * 0.40
 
-    # cerca resistencia
     for h in highs:
-
         if abs(price - h) < zone_distance:
             return True
 
-    # cerca soporte
     for l in lows:
-
         if abs(price - l) < zone_distance:
             return True
 
     return False
 
+
 # ================= VOLATILIDAD =================
 
 def volatility_ok(df):
+    if len(df) < 20:
+        return False
 
-    atr = df["atr"].iloc[-1]
+    atr = df["atr"].iloc[-2]
     mean_atr = df["atr"].mean()
 
+    if pd.isna(atr) or pd.isna(mean_atr):
+        return False
+
     return atr > mean_atr * 0.7
+
 
 # ================= RSI FILTER =================
 
 def rsi_ok(df, direction):
+    rsi = df["rsi"].iloc[-2]
 
-    rsi = df["rsi"].iloc[-1]
+    if pd.isna(rsi):
+        return False
 
     if direction == "call":
         return 50 < rsi < 75
@@ -171,11 +187,11 @@ def rsi_ok(df, direction):
 
     return False
 
+
 # ================= SEÑAL PRINCIPAL =================
 
 def pro_signal(df_m1, df_m5):
-
-    if len(df_m1) < 80:
+    if len(df_m1) < 80 or len(df_m5) < 80:
         return None, None
 
     # volatilidad
@@ -188,7 +204,7 @@ def pro_signal(df_m1, df_m5):
     if direction is None:
         return None, None
 
-    # 🔥 NO operar en soporte/resistencia
+    # filtro soporte / resistencia
     if near_reversal_zone(df_m1):
         return None, None
 
