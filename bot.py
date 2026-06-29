@@ -1,5 +1,6 @@
 import time
 import os
+import csv
 import requests
 import pandas as pd
 import sys
@@ -18,10 +19,12 @@ PASSWORD = os.getenv("IQ_PASSWORD")
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
+USE_DYNAMIC_STAKE = False
 BASE_AMOUNT = 10000
+RISK_PERCENT = 0.02
 MAX_LOSS_STREAK = 3
+TRADE_COOLDOWN = 90
 
-# Menos pares = más calidad
 PAIRS = [
     "EURUSD-OTC",
     "GBPUSD-OTC",
@@ -33,10 +36,12 @@ PAIRS = [
 trade_open = False
 last_trade_time = 0
 last_trade_candle = None
+last_trade_pair = None
 loss_streak = 0
 last_balance = None
 BOT_RUNNING = True
 LAST_UPDATE_ID = None
+last_context = None
 
 # ================= TELEGRAM =================
 
@@ -82,6 +87,7 @@ def check_telegram():
             elif text == "/start":
                 BOT_RUNNING = True
                 send("🚀 BOT ACTIVADO")
+
     except:
         pass
 
@@ -100,7 +106,47 @@ def connect_iq():
 
 
 iq = connect_iq()
-send("🔥 BOT CONSERVADOR ACTIVO")
+send("🔥 BOT MARKET CONTEXT ACTIVO")
+
+
+# ================= CSV LOG =================
+
+def log_trade(pair, direction, result, pnl, context):
+    file_exists = os.path.exists("trades.csv")
+
+    with open("trades.csv", "a", newline="") as f:
+        writer = csv.writer(f)
+
+        if not file_exists:
+            writer.writerow([
+                "timestamp",
+                "pair",
+                "direction",
+                "score",
+                "structure",
+                "result",
+                "pnl"
+            ])
+
+        writer.writerow([
+            int(time.time()),
+            pair,
+            direction,
+            context["score"] if context else "",
+            context["structure"] if context else "",
+            result,
+            pnl
+        ])
+
+
+# ================= STAKE =================
+
+def get_trade_amount():
+    if not USE_DYNAMIC_STAKE:
+        return BASE_AMOUNT
+
+    balance = iq.get_balance()
+    return round(balance * RISK_PERCENT, 2)
 
 
 # ================= CANDLES =================
@@ -137,16 +183,18 @@ def wait_candle_open():
 
 # ================= TRADE =================
 
-def trade(pair, direction, expiration):
-    global trade_open, last_trade_time, last_balance
+def trade(pair, direction, expiration, context):
+    global trade_open, last_trade_time
+    global last_balance, last_trade_pair, last_context
 
     try:
         wait_candle_open()
 
+        amount = get_trade_amount()
         last_balance = iq.get_balance()
 
         status, trade_id = iq.buy(
-            BASE_AMOUNT,
+            amount,
             pair,
             direction,
             expiration
@@ -155,8 +203,15 @@ def trade(pair, direction, expiration):
         if status:
             trade_open = True
             last_trade_time = time.time()
+            last_trade_pair = pair
+            last_context = context
 
-            msg = f"🎯 {pair} {direction.upper()} | {expiration}m"
+            msg = (
+                f"🎯 {pair} {direction.upper()} | {expiration}m\n"
+                f"Score: {context['score']}\n"
+                f"Structure: {context['structure']}"
+            )
+
             print(msg)
             send(msg)
 
@@ -183,20 +238,23 @@ def check_result():
 
         if pnl > 0:
             loss_streak = 0
-            send(f"✅ WIN +{round(pnl, 2)}")
+            send(f"✅ WIN +{round(pnl,2)}")
+            log_trade(last_trade_pair, "win", "WIN", pnl, last_context)
 
         elif pnl < 0:
             loss_streak += 1
-            send(f"❌ LOSS {round(pnl, 2)} | Racha {loss_streak}")
+            send(f"❌ LOSS {round(pnl,2)} | Racha {loss_streak}")
+            log_trade(last_trade_pair, "loss", "LOSS", pnl, last_context)
 
         else:
             send("⚪ EMPATE")
+            log_trade(last_trade_pair, "draw", "DRAW", pnl, last_context)
 
     except:
         trade_open = False
 
 
-# ================= LOOP PRINCIPAL =================
+# ================= LOOP =================
 
 while True:
     try:
@@ -210,6 +268,10 @@ while True:
 
         if trade_open:
             time.sleep(0.5)
+            continue
+
+        if time.time() - last_trade_time < TRADE_COOLDOWN:
+            time.sleep(0.2)
             continue
 
         server_time = int(iq.get_server_timestamp())
@@ -226,7 +288,7 @@ while True:
             if df_m1 is None or df_m5 is None:
                 continue
 
-            signal, expiration = pro_signal(df_m1, df_m5)
+            signal, expiration, context = pro_signal(df_m1, df_m5)
 
             if signal:
                 if loss_streak >= MAX_LOSS_STREAK:
@@ -235,7 +297,7 @@ while True:
                     loss_streak = 0
                     break
 
-                trade(pair, signal, expiration)
+                trade(pair, signal, expiration, context)
                 last_trade_candle = current_candle
                 break
 
