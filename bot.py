@@ -12,7 +12,7 @@ from strategy import add_indicators, pro_signal
 # ================= CONFIG =================
 
 logging.getLogger().setLevel(logging.CRITICAL)
-sys.stderr = open(os.devnull, 'w')
+sys.stderr = open(os.devnull, "w")
 
 EMAIL = os.getenv("IQ_EMAIL")
 PASSWORD = os.getenv("IQ_PASSWORD")
@@ -21,7 +21,6 @@ CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 BASE_AMOUNT = 10
 MAX_LOSS_STREAK = 3
-TRADE_COOLDOWN = 90
 
 PAIRS = [
     "EURUSD-OTC",
@@ -29,18 +28,19 @@ PAIRS = [
     "EURJPY-OTC"
 ]
 
-# ================= ESTADO =================
-
 trade_open = False
 last_trade_time = 0
-last_trade_candle = None
 loss_streak = 0
-last_balance = None
 BOT_RUNNING = True
 LAST_UPDATE_ID = None
+
+last_balance = None
 last_direction = None
 last_pair = None
 last_context = None
+
+last_processed_candle = None
+
 
 # ================= TELEGRAM =================
 
@@ -90,24 +90,24 @@ def check_telegram():
         pass
 
 
-# ================= IQ OPTION =================
+# ================= IQ =================
 
 def connect_iq():
     iq = IQ_Option(EMAIL, PASSWORD)
     iq.connect()
 
     if not iq.check_connect():
-        raise Exception("Error conectando a IQ Option")
+        raise Exception("Error conectando IQ Option")
 
     iq.change_balance("PRACTICE")
     return iq
 
 
 iq = connect_iq()
-send("🔥 BOT MARKET STRUCTURE ACTIVO")
+send("🔥 BOT PRICE ACTION OTC ACTIVO")
 
 
-# ================= LOG CSV =================
+# ================= CSV =================
 
 def log_trade(pair, direction, result, pnl, context):
     file_exists = os.path.exists("trades.csv")
@@ -120,8 +120,8 @@ def log_trade(pair, direction, result, pnl, context):
                 "timestamp",
                 "pair",
                 "direction",
-                "score",
                 "structure",
+                "score",
                 "result",
                 "pnl"
             ])
@@ -130,14 +130,14 @@ def log_trade(pair, direction, result, pnl, context):
             int(time.time()),
             pair,
             direction,
-            context["score"] if context else "",
-            context["structure"] if context else "",
+            context.get("structure"),
+            context.get("score"),
             result,
             pnl
         ])
 
 
-# ================= CANDLES =================
+# ================= DATA =================
 
 def get_candles(pair, tf):
     try:
@@ -155,30 +155,31 @@ def get_candles(pair, tf):
         return None
 
 
-# ================= TIMING =================
+# ================= TRADE =================
 
-def wait_candle_open():
+def wait_new_candle():
     while True:
         server_time = iq.get_server_timestamp()
         sec = int(server_time) % 60
         ms = server_time - int(server_time)
 
-        if sec == 0 and ms < 0.30:
+        if sec == 0 and ms < 0.20:
             return
 
-        time.sleep(0.02)
+        time.sleep(0.01)
 
-
-# ================= TRADE =================
 
 def trade(pair, direction, expiration, context):
-    global trade_open, last_trade_time
-    global last_balance, last_direction
-    global last_pair, last_context
+    global trade_open
+    global last_trade_time
+    global last_balance
+    global last_direction
+    global last_pair
+    global last_context
+
+    wait_new_candle()
 
     try:
-        wait_candle_open()
-
         last_balance = iq.get_balance()
 
         status, trade_id = iq.buy(
@@ -195,28 +196,26 @@ def trade(pair, direction, expiration, context):
             last_pair = pair
             last_context = context
 
-            msg = (
-                f"🎯 {pair} {direction.upper()} | {expiration}m\n"
+            send(
+                f"🎯 {pair} {direction.upper()} {expiration}m\n"
                 f"Score: {context['score']}\n"
                 f"Structure: {context['structure']}"
             )
-
-            print(msg)
-            send(msg)
 
     except Exception as e:
         print("Trade error:", e)
 
 
-# ================= RESULTADO =================
+# ================= RESULT =================
 
 def check_result():
-    global trade_open, loss_streak
+    global trade_open
+    global loss_streak
 
     if not trade_open:
         return
 
-    if time.time() - last_trade_time < 140:
+    if time.time() - last_trade_time < 80:
         return
 
     try:
@@ -232,18 +231,18 @@ def check_result():
 
         elif pnl < 0:
             loss_streak += 1
-            send(f"❌ LOSS {round(pnl,2)} | Racha {loss_streak}")
+            send(f"❌ LOSS {round(pnl,2)} | Streak {loss_streak}")
             log_trade(last_pair, last_direction, "LOSS", pnl, last_context)
 
         else:
-            send("⚪ EMPATE")
+            send("⚪ DRAW")
             log_trade(last_pair, last_direction, "DRAW", pnl, last_context)
 
     except:
         trade_open = False
 
 
-# ================= LOOP PRINCIPAL =================
+# ================= LOOP =================
 
 while True:
     try:
@@ -259,15 +258,23 @@ while True:
             time.sleep(0.5)
             continue
 
-        if time.time() - last_trade_time < TRADE_COOLDOWN:
-            time.sleep(0.2)
-            continue
-
         server_time = int(iq.get_server_timestamp())
         current_candle = server_time // 60
 
-        if last_trade_candle == current_candle:
+        if current_candle == last_processed_candle:
             time.sleep(0.2)
+            continue
+
+        if server_time % 60 != 1:
+            time.sleep(0.05)
+            continue
+
+        last_processed_candle = current_candle
+
+        if loss_streak >= MAX_LOSS_STREAK:
+            send("🛑 STOP POR RACHAS")
+            time.sleep(300)
+            loss_streak = 0
             continue
 
         for pair in PAIRS:
@@ -280,24 +287,17 @@ while True:
             signal, expiration, context = pro_signal(df_m1, df_m5)
 
             if signal:
-                if loss_streak >= MAX_LOSS_STREAK:
-                    send("🛑 STOP POR RACHAS")
-                    time.sleep(300)
-                    loss_streak = 0
-                    break
-
                 trade(pair, signal, expiration, context)
-                last_trade_candle = current_candle
                 break
 
         time.sleep(0.2)
 
     except Exception as e:
-        print("Error:", e)
+        print("Loop error:", e)
 
         try:
             iq = connect_iq()
-            send("♻️ Reconectado")
+            send("♻️ RECONNECTED")
         except:
             pass
 
